@@ -35,8 +35,10 @@ def _load_state():
 def _save_state(state):
     """Saves the given portfolio state to JSON."""
     try:
-        with open(STATE_FILE, 'w', encoding='utf-8') as f:
+        temp_file = STATE_FILE + ".tmp"
+        with open(temp_file, 'w', encoding='utf-8') as f:
             json.dump(state, f, indent=2, ensure_ascii=False)
+        os.replace(temp_file, STATE_FILE)
     except Exception as e:
         print(f"Error saving state: {e}")
 
@@ -54,8 +56,10 @@ def _load_trade_history():
 def _save_trade_history(history):
     """Saves the trade history to JSON."""
     try:
-        with open(TRADE_HISTORY_FILE, 'w', encoding='utf-8') as f:
+        temp_file = TRADE_HISTORY_FILE + ".tmp"
+        with open(temp_file, 'w', encoding='utf-8') as f:
             json.dump(history, f, indent=2, ensure_ascii=False)
+        os.replace(temp_file, TRADE_HISTORY_FILE)
     except Exception as e:
         print(f"Error saving trade history: {e}")
 
@@ -271,8 +275,10 @@ def save_daily_portfolio_value(date_str, total_value):
     
     try:
         os.makedirs(DATA_DIR, exist_ok=True)
-        with open(VALUE_HISTORY_FILE, 'w', encoding='utf-8') as f:
+        temp_file = VALUE_HISTORY_FILE + ".tmp"
+        with open(temp_file, 'w', encoding='utf-8') as f:
             json.dump(history, f, indent=2, ensure_ascii=False)
+        os.replace(temp_file, VALUE_HISTORY_FILE)
     except Exception as e:
         print(f"Error saving value history: {e}")
 

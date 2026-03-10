@@ -51,6 +51,7 @@ def main():
             slot_data = state.get("slots", {}).get(s, {})
             slot_proceeds += slot_data.get("cash_balance", 0.0)
             
+            all_holdings_sold = True
             for h in slot_data.get("holdings", []):
                 if h.get("status") == "active":
                     t = h.get("ticker")
@@ -59,7 +60,15 @@ def main():
                     df_hist_temp = get_price_history(t)
                     curr_price = df_hist_temp.iloc[-1]['close'] if df_hist_temp is not None and not df_hist_temp.empty else 1.0
                     
-                    success = kis_api.execute_kis_sell(t, shares, curr_price)
+                    if kis_api.KIS_READY:
+                        success = kis_api.execute_kis_sell(t, shares, curr_price)
+                        if not success:
+                            print(f"API time-stop sell failed for {t}. Skipping DB update.")
+                            all_holdings_sold = False
+                            continue
+                    else:
+                        success = True
+                        print(f"MOCK MODE: Simulated time-stop sell for {t}.")
                     
                     slot_proceeds += round(shares * curr_price, 2)
                     print(f"Executed time-stop sell for Slot {s} - {t} ({shares} shares). Success: {success}")
@@ -75,6 +84,10 @@ def main():
                         status="target-sell"
                     )
                     
+            if not all_holdings_sold:
+                print(f"Slot {s} had failed sells. Aborting clear_slot to prevent desync.")
+                continue
+
         db_manager.clear_slot(s, returned_cash=slot_proceeds)
         sold_slots_msg += f"\nSlot {s} 4-week holding period met. Sold to cash (${slot_proceeds:,.2f})."
         
@@ -163,11 +176,16 @@ def main():
                      except Exception as e:
                          print(f"Stop-loss KIS API sell error for {ticker}: {e}")
                 
-                # 2. Get current price for record logging (fallback to Yahoo if live fails)
+                # 2. Prevent DB desync if API failed
+                if kis_api.KIS_READY and not sell_success:
+                    print(f"API stop-loss sell failed for {ticker}. Skipping DB update.")
+                    continue
+
+                # 3. Get current price for record logging (fallback to Yahoo if live fails)
                 df_hist = get_price_history(ticker)
                 execute_price = df_hist.iloc[-1]['close'] if df_hist is not None and not df_hist.empty else 1.0
                 
-                # 3. Update DB state
+                # 4. Update DB state
                 db_manager.trigger_stop_loss(slot_key, ticker, reason, execute_price, shares_to_sell)
     
     # Calculate Total Portfolio Value using KIS API Direct Fetch

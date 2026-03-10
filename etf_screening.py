@@ -533,7 +533,15 @@ async def main():
                     shares_to_buy = int(usd_per_etf // price)
                     
                     if shares_to_buy > 0:
-                        success = kis_api.execute_kis_buy(t, shares_to_buy, price)
+                        if kis_api.KIS_READY:
+                            success = kis_api.execute_kis_buy(t, shares_to_buy, price)
+                            if not success:
+                                print(f"API buy failed for {t}. Skipping DB update.")
+                                continue
+                        else:
+                            success = True
+                            print(f"MOCK MODE: Simulated buy for {t}.")
+                            
                         print(f"Executed buy for Slot {empty_slot} - {t} ({shares_to_buy} shares @ ${price}). Success: {success}")
                         
                         actual_spent = shares_to_buy * price
@@ -598,6 +606,17 @@ async def main():
                     break
                     
             curr_price = get_current_price(ticker)
+            
+            if kis_api.KIS_READY and shares_to_sell > 0:
+                sell_success = kis_api.execute_kis_sell(ticker, shares_to_sell, curr_price)
+                if not sell_success:
+                    print(f"API stop-loss sell failed for {ticker}. Skipping DB update.")
+                    continue
+                else:
+                    print(f"Executed stop-loss sell for {ticker} ({shares_to_sell} shares).")
+            else:
+                print(f"MOCK MODE: Simulated stop-loss sell for {ticker}.")
+
             db_manager.trigger_stop_loss(slot_key, ticker, reason, curr_price, shares_to_sell)
 
 if __name__ == "__main__":
