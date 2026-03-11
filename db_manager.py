@@ -199,6 +199,48 @@ def trigger_stop_loss(slot_key, ticker_to_stop, sell_reason, sell_price, execute
         _save_state(state)
     return found
 
+def increment_none_data_days(slot_key, ticker):
+    """
+    Increments the consecutive missed data day counter for a specific active holding.
+    Returns the new counter value.
+    """
+    state = _load_state()
+    if not state or slot_key not in state.get('slots', {}):
+        return 0
+
+    slot = state['slots'][slot_key]
+    if slot.get('status') != 'invested':
+        return 0
+
+    for holding in slot.get('holdings', []):
+        if holding.get('ticker') == str(ticker) and holding.get('status') == 'active':
+            current_count = holding.get('consecutive_none_days', 0)
+            new_count = current_count + 1
+            holding['consecutive_none_days'] = new_count
+            _save_state(state)
+            return new_count
+
+    return 0
+
+def reset_none_data_days(slot_key, ticker):
+    """
+    Resets the consecutive missed data day counter to zero for a specific active holding.
+    """
+    state = _load_state()
+    if not state or slot_key not in state.get('slots', {}):
+        return
+
+    slot = state['slots'][slot_key]
+    if slot.get('status') != 'invested':
+        return
+
+    for holding in slot.get('holdings', []):
+        if holding.get('ticker') == str(ticker) and holding.get('status') == 'active':
+            if holding.get('consecutive_none_days', 0) > 0:
+                holding['consecutive_none_days'] = 0
+                _save_state(state)
+            return
+
 def get_active_holdings_for_monitoring():
     """
     Returns a list of active holdings across all invested slots for daily monitoring.

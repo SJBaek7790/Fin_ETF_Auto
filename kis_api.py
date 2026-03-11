@@ -18,13 +18,16 @@ def execute_kis_sell(ticker, shares, current_price):
     if not KIS_READY or shares <= 0: return False
     try:
         env = ka.getTREnv()
-        # Limit sell (00) at 0.95x current price to ensure fill
-        limit_price = str(round(current_price * 0.95, 2))
+        
+        # Real: MOO (31) Market On Open
+        ord_dvsn = "31"
+        limit_price = "0"
+            
         df = order(
             cano=env.my_acct, acnt_prdt_cd=env.my_prod,
             ovrs_excg_cd="NASD", pdno=ticker, ord_qty=str(shares),
             ovrs_ord_unpr=limit_price, ord_dv="sell", ctac_tlno="", mgco_aptm_odno="",
-            ord_svr_dvsn_cd="0", ord_dvsn="00", env_dv="demo" if ka.isPaperTrading() else "real"
+            ord_svr_dvsn_cd="0", ord_dvsn=ord_dvsn, env_dv="real"
         )
         return True if df is not None and not df.empty else False
     except Exception as e:
@@ -35,13 +38,16 @@ def execute_kis_buy(ticker, shares, current_price):
     if not KIS_READY or shares <= 0: return False
     try:
         env = ka.getTREnv()
-        # Limit buy (00) at 1.05x current price to ensure fill
-        limit_price = str(round(current_price * 1.05, 2))
+        
+        # Real: LOC (34) Limit On Close at current price
+        ord_dvsn = "34"
+        limit_price = str(round(current_price, 2))
+            
         df = order(
             cano=env.my_acct, acnt_prdt_cd=env.my_prod,
             ovrs_excg_cd="NASD", pdno=ticker, ord_qty=str(shares),
             ovrs_ord_unpr=limit_price, ord_dv="buy", ctac_tlno="", mgco_aptm_odno="",
-            ord_svr_dvsn_cd="0", ord_dvsn="00", env_dv="demo" if ka.isPaperTrading() else "real"
+            ord_svr_dvsn_cd="0", ord_dvsn=ord_dvsn, env_dv="real"
         )
         return True if df is not None and not df.empty else False
     except Exception as e:
@@ -49,19 +55,19 @@ def execute_kis_buy(ticker, shares, current_price):
         return False
 
 def get_available_usd():
-    if not KIS_READY: return 10000.0 # Return mock 10k USD
+    if not KIS_READY: return 0.0
     try:
         env = ka.getTREnv()
         df1, _, _ = inquire_present_balance(
              cano=env.my_acct, acnt_prdt_cd=env.my_prod,
              wcrc_frcr_dvsn_cd="02", natn_cd="840", tr_mket_cd="00", inqr_dvsn_cd="00",
-             env_dv="demo" if ka.isPaperTrading() else "real"
+             env_dv="real"
         )
         if df1 is not None and not df1.empty and "frcr_prsl_tot_amt" in df1.columns:
              return float(df1.iloc[0]["frcr_prsl_tot_amt"])
     except Exception as e:
         print(f"Error fetching USD balance: {e}")
-    return 10000.0
+    return 0.0
 
 def get_total_portfolio_value():
     if not KIS_READY: return 0.0
@@ -70,7 +76,7 @@ def get_total_portfolio_value():
         df1, _, _ = inquire_present_balance(
              cano=env.my_acct, acnt_prdt_cd=env.my_prod,
              wcrc_frcr_dvsn_cd="02", natn_cd="840", tr_mket_cd="00", inqr_dvsn_cd="00",
-             env_dv="demo" if ka.isPaperTrading() else "real"
+             env_dv="real"
         )
         
         usd_cash = 0.0

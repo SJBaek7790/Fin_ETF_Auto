@@ -15,6 +15,12 @@ The project runs a 4-Slot Rotation investment system.
 - [x] Fix State-Execution Desync bug: `db_manager` updates are now strictly gated by `kis_api` execution success in `etf_monitoring.py` and `etf_screening.py`.
 - [x] Implement atomic writes for JSON data files (`portfolio_state.json`, `trade_history.json`, `portfolio_value_history.json`) in `db_manager.py` to prevent file corruption.
 - [x] Create a new GitHub repository for `Fin_ETF_Auto` and upload the entire codebase.
+- [x] Fix Hardcoded Limit Price Risks: Using Market On Open (MOO) for sales and Limit On Close (LOC) for buys on Real environments.
+- [x] Implemented delisted ETF protection: Tracks consecutive `None` data days in `portfolio_state.json` and issues emergency Telegram alerts after 3 days to prevent slot lock-up.
+- [x] Removed all mock environment and paper trading conditionals from `kis_api.py`, enforcing permanent real trading execution logic.
+- [x] Fixed Gemini LLM JSON parsing crashes in `etf_screening.py` by pre-processing and stripping hallucinatory markdown wrappers (````json ````).
+- [x] Fixed Telegram Async/Sync Mixups by wrapping blocking I/O calls inside `etf_screening.py` with `asyncio.to_thread`.
+- [x] Implemented 3% cash buffer for new ETF purchases in `etf_screening.py` (`(usd_per_etf * 0.97) // price`) to prevent insufficient USD errors on gap-ups.
 
 ## Active Task
 - None.

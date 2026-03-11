@@ -122,11 +122,10 @@ def calculate_metrics(data, benchmark_ret):
     
     # Calculate RSI on Excess Returns with period 60
     rsi_series = calculate_rsi(df_aligned['Excess'], period=60)
-    
-    if len(rsi_series) == 0 or np.isnan(rsi_series.iloc[-1]):
-        return None
-        
     ex_rsi_3m = rsi_series.iloc[-1]
+    
+    if len(rsi_series) == 0 or np.isnan(rsi_series.iloc[-1]) or pd.isna(ex_rsi_3m):
+        return None
 
     return {
         'RET3M': round(ret_3m, 2),
@@ -263,7 +262,8 @@ The result MUST be output ONLY in the JSON array format below. Do NOT include an
                 )
             )
         )
-        selected = json.loads(response.text)
+        cleaned_text = response.text.strip().removeprefix('```json').removesuffix('```').strip()
+        selected = json.loads(cleaned_text)
         
         if isinstance(selected, list):
             print(f"Gemini selected ETFs successfully.")
@@ -307,7 +307,7 @@ async def check_holdings_monitor(screened_df, min_max_stats, benchmark_ret, bot)
     """
     print("\n--- Starting Holdings Monitor ---")
     
-    active_holdings = db_manager.get_active_holdings_for_monitoring()
+    active_holdings = await asyncio.to_thread(db_manager.get_active_holdings_for_monitoring)
     if not active_holdings:
         print("No active holdings found in portfolio state.")
         return []
@@ -338,7 +338,7 @@ async def check_holdings_monitor(screened_df, min_max_stats, benchmark_ret, bot)
         else:
             # 2. Not in screened_df — fetch and calculate
             print("  -> Not in screened results. Fetching data...")
-            data = fetch_etf_data(ticker)
+            data = await asyncio.to_thread(fetch_etf_data, ticker)
             if not data:
                 print(f"  -> Insufficient data for {name}")
                 continue 
@@ -400,7 +400,7 @@ async def main():
     
     # 0. Fetch Benchmark Data (SPY)
     print("Fetching Benchmark (SPY) data...")
-    df_bm = get_etf_ohlcv_by_date_wrapper(start_str, end_str, "SPY")
+    df_bm = await asyncio.to_thread(get_etf_ohlcv_by_date_wrapper, start_str, end_str, "SPY")
     if df_bm is None or df_bm.empty:
         msg = "CRITICAL: Failed to fetch Benchmark data. Aborting."
         print(msg)
@@ -411,7 +411,7 @@ async def main():
     df_bm = df_bm.sort_index()
     benchmark_ret = df_bm['종가'].pct_change().dropna()
     
-    etf_tickers = get_etf_ticker_list_wrapper(end_str)
+    etf_tickers = await asyncio.to_thread(get_etf_ticker_list_wrapper, end_str)
     print(f"Found {len(etf_tickers)} ETF tickers for date {end_str}")
     results = []
     
@@ -453,12 +453,12 @@ async def main():
         selected = select_etfs_with_gemini(df_final)
         
         # --- NEW DB MANAGER LOGIC ---
-        db_manager.init_state()
+        await asyncio.to_thread(db_manager.init_state)
         today_str = datetime.now().strftime("%Y-%m-%d")
         
-        def get_current_price(ticker):
+        async def get_current_price(ticker):
             # Fetches current price using unauthenticated Yahoo Finance as fallback or KIS
-            data = fetch_etf_data(ticker)
+            data = await asyncio.to_thread(fetch_etf_data, ticker)
             if data and not data['close'].empty:
                 return round(float(data['close'].iloc[-1]), 2)
             return 1.0 # Failsafe
@@ -473,7 +473,7 @@ async def main():
         summary_msg = await send_screening_message(filter_stats, bot, gemini_status)
         
         # --- Fetch Portfolio Metrics from db_manager ---
-        metrics = db_manager.calculate_portfolio_metrics()
+        metrics = await asyncio.to_thread(db_manager.calculate_portfolio_metrics)
         if metrics:
             metrics_msg = (
                 f"\n\n<b>📊 Portfolio Performance</b>\n"
@@ -494,20 +494,20 @@ async def main():
                 await send_telegram_document_async(json_path, caption=f"US ETF Selection Results ({end_str})", bot=bot)
             
             # 2. Buy into an empty slot
-            empty_slot = db_manager.get_empty_slot()
+            empty_slot = await asyncio.to_thread(db_manager.get_empty_slot)
             if empty_slot:
                 print(f"\n=== Buying into Slot {empty_slot} ===")
                 target_sell_date = (datetime.now() + timedelta(days=28)).strftime("%Y-%m-%d")
                 
                 # Allocation Logic
-                state = db_manager.get_portfolio_state()
+                state = await asyncio.to_thread(db_manager.get_portfolio_state)
                 slot_data = state.get("slots", {}).get(empty_slot, {})
                 allocated_usd = slot_data.get("cash_balance", 0.0)
                 
                 if allocated_usd == 0.0:
                     # First run bootstrap: Get total evaluation and divide by number of empty unallocated slots
                     print("Initial bootstrap: Fetching total USD to divide among unallocated slots.")
-                    total_usd = kis_api.get_available_usd()
+                    total_usd = await asyncio.to_thread(kis_api.get_available_usd)
                     unallocated_slots = [k for k, v in state.get("slots", {}).items() if v.get("status") == "empty" and v.get("cash_balance", 0.0) == 0.0]
                     
                     if unallocated_slots:
@@ -516,7 +516,7 @@ async def main():
                         for k in unallocated_slots:
                             if k != empty_slot:
                                 state["slots"][k]["cash_balance"] = allocated_usd        
-                        db_manager._save_state(state) # Save pre-allocations under the hood
+                        await asyncio.to_thread(db_manager._save_state, state) # Save pre-allocations under the hood
                 
                 print(f"Allocated USD for Slot {empty_slot}: ${allocated_usd:,.2f}")
                 
@@ -529,12 +529,13 @@ async def main():
                     t = str(entry.get('Ticker', entry.get('ticker', '')))
                     n = str(entry.get('ETF Name', entry.get('name', '')))
                     
-                    price = get_current_price(t)
-                    shares_to_buy = int(usd_per_etf // price)
+                    price = await get_current_price(t)
+                    # Apply a 3% cash buffer to mitigate gap-up opening prices exceeding available funds
+                    shares_to_buy = int((usd_per_etf * 0.97) // price)
                     
                     if shares_to_buy > 0:
                         if kis_api.KIS_READY:
-                            success = kis_api.execute_kis_buy(t, shares_to_buy, price)
+                            success = await asyncio.to_thread(kis_api.execute_kis_buy, t, shares_to_buy, price)
                             if not success:
                                 print(f"API buy failed for {t}. Skipping DB update.")
                                 continue
@@ -556,7 +557,7 @@ async def main():
                         })
                 
                 remaining_cash = round(allocated_usd - total_spent, 2)
-                db_manager.fill_slot(empty_slot, target_sell_date, new_holdings, today_str, initial_cash_balance=remaining_cash)
+                await asyncio.to_thread(db_manager.fill_slot, empty_slot, target_sell_date, new_holdings, today_str, initial_cash_balance=remaining_cash)
                 
                 buy_msg = f"\n✅ Bought {len(selected)} ETFs into Slot {empty_slot}. (Spent: ${round(total_spent, 2)})"
                 print(buy_msg)
@@ -596,7 +597,7 @@ async def main():
     if alert_tickers:
         print(f"\n=== Auto-Sell: Triggering stop loss for {len(alert_tickers)} ETFs ===")
         # Get active holdings so we can find shares
-        active_holdings = db_manager.get_active_holdings_for_monitoring()
+        active_holdings = await asyncio.to_thread(db_manager.get_active_holdings_for_monitoring)
         
         for ticker, slot_key, reason in alert_tickers:
             shares_to_sell = 0
@@ -605,10 +606,10 @@ async def main():
                     shares_to_sell = int(h.get('shares', 0))
                     break
                     
-            curr_price = get_current_price(ticker)
+            curr_price = await get_current_price(ticker)
             
             if kis_api.KIS_READY and shares_to_sell > 0:
-                sell_success = kis_api.execute_kis_sell(ticker, shares_to_sell, curr_price)
+                sell_success = await asyncio.to_thread(kis_api.execute_kis_sell, ticker, shares_to_sell, curr_price)
                 if not sell_success:
                     print(f"API stop-loss sell failed for {ticker}. Skipping DB update.")
                     continue
@@ -617,7 +618,7 @@ async def main():
             else:
                 print(f"MOCK MODE: Simulated stop-loss sell for {ticker}.")
 
-            db_manager.trigger_stop_loss(slot_key, ticker, reason, curr_price, shares_to_sell)
+            await asyncio.to_thread(db_manager.trigger_stop_loss, slot_key, ticker, reason, curr_price, shares_to_sell)
 
 if __name__ == "__main__":
     try:

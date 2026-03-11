@@ -119,7 +119,20 @@ def main():
         time.sleep(0.1)
         
         df = get_price_history(code)
-        if df is None or len(df) < 120:
+        
+        if df is None or df.empty:
+            # Handle potential delisting/liquidation
+            consecutive_none = db_manager.increment_none_data_days(slot_key, code)
+            print(f"Data missing for {name} ({code}). Consecutive days: {consecutive_none}")
+            if consecutive_none >= 3:
+                alerts.append(f"🚨 EMERGENCY: {name} ({code}) [Slot {slot_key}] has returned NO DATA for {consecutive_none} consecutive days! Possible delisting or liquidation. Manual intervention required!")
+            continue
+            
+        else:
+            # Reset counter on successful data fetch
+            db_manager.reset_none_data_days(slot_key, code)
+            
+        if len(df) < 120:
             print(f"Insufficient data for {name}")
             continue
             
