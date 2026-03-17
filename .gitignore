@@ -22,3 +22,5 @@ env/
 keys.json
 KEYS.json
 data/*.json
+data/kis_master/
+.local_deps/

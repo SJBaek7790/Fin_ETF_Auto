@@ -1,12 +1,22 @@
 import os
+import sys
 import json
+import logging
+
+# Add .local_deps to sys.path for locally-installed packages (e.g., exchange_calendars)
+_LOCAL_DEPS = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.local_deps')
+if os.path.isdir(_LOCAL_DEPS) and _LOCAL_DEPS not in sys.path:
+    sys.path.insert(0, _LOCAL_DEPS)
 import requests
 import telegram
 import asyncio
 import pandas as pd
 import FinanceDataReader as fdr
 import yfinance as yf
+import exchange_calendars as xcals
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 try:
     from dotenv import load_dotenv
@@ -21,19 +31,15 @@ CHAT_ID = os.environ.get("CHAT_ID")
 def send_telegram_message(message):
     """Sends a simple text message via Telegram."""
     if not TELEGRAM_TOKEN or not CHAT_ID:
-        print("Telegram credentials missing.")
+        logger.warning("Telegram credentials missing.")
         return
 
-    # Using requests for synchronous usage (compatibility with non-async parts if needed)
-    # But since we have asyncio in screening, we might want async? 
-    # Current usages: etf_monitoring (sync), etf_screening (async wrapper).
-    # We'll provide a sync version here.
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML"}
     try:
         requests.post(url, json=payload, timeout=10)
     except Exception as e:
-        print(f"Failed to send Telegram message: {e}")
+        logger.error("Failed to send Telegram message: %s", e)
 
 async def send_telegram_message_async(message, bot=None):
     """Async version using python-telegram-bot if available, or just wrapping sync."""
@@ -58,7 +64,18 @@ async def send_telegram_document_async(file_path, caption=None, bot=None):
         with open(file_path, 'rb') as f:
             await bot.send_document(chat_id=CHAT_ID, document=f, caption=caption)
     except Exception as e:
-        print(f"Failed to send Telegram document: {e}")
+        logger.error("Failed to send Telegram document: %s", e)
+
+def send_telegram_document_sync(file_path, caption=None):
+    """Sends a local file as a document via Telegram (synchronous)."""
+    if not TELEGRAM_TOKEN or not CHAT_ID or not os.path.exists(file_path):
+        return
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument"
+        with open(file_path, 'rb') as f:
+            requests.post(url, data={"chat_id": CHAT_ID, "caption": caption or ""}, files={"document": f}, timeout=30)
+    except Exception as e:
+        logger.error("Failed to send Telegram document (sync): %s", e)
 
 # --- FinanceDataReader WRAPPERS ---
 
@@ -70,7 +87,7 @@ def _get_etf_listing():
         try:
             _ETF_LISTING_CACHE = fdr.StockListing('ETF/US')
         except Exception as e:
-            print(f"Error fetching ETF listings for US via fdr: {e}")
+            logger.error("Error fetching ETF listings for US via fdr: %s", e)
             _ETF_LISTING_CACHE = pd.DataFrame()
     return _ETF_LISTING_CACHE
 
@@ -82,7 +99,7 @@ def get_market_ohlcv_wrapper(start_date, end_date, ticker):
         df = fdr.DataReader(ticker, start_dt, end_dt)
         
         if df is None or df.empty:
-            print(f"Empty data from fdr for {ticker}, falling back to yfinance")
+            logger.warning("Empty data from fdr for %s, falling back to yfinance", ticker)
             return fetch_ohlcv_yfinance(start_date, end_date, ticker)
             
         # Reconstruct DataFrame with pykrx compatible columns
@@ -97,7 +114,7 @@ def get_market_ohlcv_wrapper(start_date, end_date, ticker):
         })
         return df_out
     except Exception as e:
-        print(f"Error in get_market_ohlcv_wrapper for {ticker}: {e}, falling back to yfinance")
+        logger.warning("Error in get_market_ohlcv_wrapper for %s: %s, falling back to yfinance", ticker, e)
         return fetch_ohlcv_yfinance(start_date, end_date, ticker)
 
 def get_etf_ohlcv_by_date_wrapper(start_date, end_date, ticker):
@@ -112,7 +129,7 @@ def get_etf_ticker_list_wrapper(date=None):
             return df_etf['Symbol'].tolist()
         return []
     except Exception as e:
-        print(f"Error in get_etf_ticker_list_wrapper: {e}")
+        logger.error("Error in get_etf_ticker_list_wrapper: %s", e)
         return []
 
 def get_etf_ticker_name_wrapper(ticker):
@@ -125,7 +142,7 @@ def get_etf_ticker_name_wrapper(ticker):
                 return match.iloc[0]['Name']
         return str(ticker)
     except Exception as e:
-        print(f"Error in get_etf_ticker_name_wrapper for {ticker}: {e}")
+        logger.error("Error in get_etf_ticker_name_wrapper for %s: %s", ticker, e)
         return str(ticker)
 
 def fetch_ohlcv_yfinance(start_date_str, end_date_str, ticker):
@@ -165,6 +182,20 @@ def fetch_ohlcv_yfinance(start_date_str, end_date_str, ticker):
         })
         return df_out
     except Exception as e:
-        print(f"yfinance fallback failed for {ticker}: {e}")
+        logger.error("yfinance fallback failed for %s: %s", ticker, e)
         return None
 
+
+# --- US MARKET CALENDAR ---
+
+def is_us_market_open_today():
+    """Returns True if today is a US market trading day (XNYS = NYSE).
+    
+    Note: Uses the current US Eastern date to check against the NYSE calendar.
+    exchange_calendars requires timezone-naive timestamps.
+    """
+    nyse = xcals.get_calendar("XNYS")
+    # Get today's date in US Eastern time, then strip timezone for exchange_calendars
+    us_eastern_now = pd.Timestamp.now(tz="America/New_York")
+    today = pd.Timestamp(us_eastern_now.date())  # tz-naive date
+    return nyse.is_session(today)

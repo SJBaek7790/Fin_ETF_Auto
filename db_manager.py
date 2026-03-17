@@ -1,7 +1,10 @@
 import os
 import json
+import logging
 import pandas as pd
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 DATA_DIR = 'data'
 STATE_FILE = os.path.join(DATA_DIR, 'portfolio_state.json')
@@ -29,7 +32,7 @@ def _load_state():
         with open(STATE_FILE, 'r', encoding='utf-8') as f:
             return json.load(f)
     except Exception as e:
-        print(f"Error loading state: {e}")
+        logger.error("Error loading state: %s", e)
         return None
 
 def _save_state(state):
@@ -40,7 +43,7 @@ def _save_state(state):
             json.dump(state, f, indent=2, ensure_ascii=False)
         os.replace(temp_file, STATE_FILE)
     except Exception as e:
-        print(f"Error saving state: {e}")
+        logger.error("Error saving state: %s", e)
 
 def _load_trade_history():
     """Loads the trade history from JSON."""
@@ -50,7 +53,7 @@ def _load_trade_history():
         with open(TRADE_HISTORY_FILE, 'r', encoding='utf-8') as f:
             return json.load(f)
     except Exception as e:
-        print(f"Error loading trade history: {e}")
+        logger.error("Error loading trade history: %s", e)
         return []
 
 def _save_trade_history(history):
@@ -61,7 +64,7 @@ def _save_trade_history(history):
             json.dump(history, f, indent=2, ensure_ascii=False)
         os.replace(temp_file, TRADE_HISTORY_FILE)
     except Exception as e:
-        print(f"Error saving trade history: {e}")
+        logger.error("Error saving trade history: %s", e)
 
 def log_trade(action, ticker, shares, price, slot_key, name="", reason="", status=""):
     """
@@ -83,7 +86,7 @@ def log_trade(action, ticker, shares, price, slot_key, name="", reason="", statu
     
     history.append(trade_record)
     _save_trade_history(history)
-    print(f"Logged {action} trade for {ticker} ({shares} shares @ {price}) in Slot {slot_key}.")
+    logger.info("Logged %s trade for %s (%s shares @ %s) in Slot %s.", action, ticker, shares, price, slot_key)
 
 def get_portfolio_state():
     """Returns the current portfolio state map."""
@@ -157,7 +160,7 @@ def trigger_stop_loss(slot_key, ticker_to_stop, sell_reason, sell_price, execute
         return False
     
     slot = state['slots'][slot_key]
-    if slot.get('status') != 'invested':
+    if not isinstance(slot, dict) or slot.get('status') != 'invested':
         return False
         
     if sell_date is None:
@@ -173,9 +176,6 @@ def trigger_stop_loss(slot_key, ticker_to_stop, sell_reason, sell_price, execute
             holding['sell_reason'] = sell_reason
             holding['sell_date'] = sell_date
             holding['sell_price'] = sell_price
-            
-            # If we sold everything, shares remains 0 (or original if we want to track). Let's represent remaining shares if partial. 
-            # Assuming full stop-loss for now:
             
             # Add proceeds to cash balance
             slot['cash_balance'] = round(slot.get('cash_balance', 0.0) + proceeds, 2)
@@ -209,7 +209,7 @@ def increment_none_data_days(slot_key, ticker):
         return 0
 
     slot = state['slots'][slot_key]
-    if slot.get('status') != 'invested':
+    if not isinstance(slot, dict) or slot.get('status') != 'invested':
         return 0
 
     for holding in slot.get('holdings', []):
@@ -231,7 +231,7 @@ def reset_none_data_days(slot_key, ticker):
         return
 
     slot = state['slots'][slot_key]
-    if slot.get('status') != 'invested':
+    if not isinstance(slot, dict) or slot.get('status') != 'invested':
         return
 
     for holding in slot.get('holdings', []):
@@ -240,6 +240,88 @@ def reset_none_data_days(slot_key, ticker):
                 holding['consecutive_none_days'] = 0
                 _save_state(state)
             return
+
+def reconcile_with_kis_holdings(kis_holdings):
+    """
+    Compares the expected active holdings in portfolio_state.json with the actual
+    holdings returned from the KIS API. If there is a shortfall (i.e. shares in DB > actual shares),
+    it corrects the DB downward and refunds the unspent cash to the slot's cash_balance.
+    Returns a list of alert strings describing any actions taken.
+    """
+    state = _load_state()
+    if not state:
+        return []
+    
+    # Create a fast lookup map for actual holdings
+    actual_map = {str(k['ticker']): float(k['shares']) for k in kis_holdings}
+    alerts = []
+    state_changed = False
+
+    for slot_key, slot_data in state.get('slots', {}).items():
+        if slot_data.get('status') == 'invested':
+            active_holdings = [h for h in slot_data.get('holdings', []) if h.get('status') == 'active']
+            
+            for holding in active_holdings:
+                ticker = str(holding.get('ticker'))
+                expected_shares = float(holding.get('shares', 0))
+                
+                # If the ticker exists in actual_map, use it; else actual is 0
+                actual_shares = actual_map.get(ticker, 0.0)
+                
+                if expected_shares > actual_shares:
+                    shortfall = expected_shares - actual_shares
+                    buy_price = float(holding.get('buy_price', 0.0))
+                    refund_amount = round(shortfall * buy_price, 2)
+                    
+                    if actual_shares == 0.0:
+                        # The entire order failed to execute or was completely mismatched
+                        holding['status'] = 'failed_buy'
+                        msg = f"Reconciliation: Buy order for {ticker} in Slot {slot_key} failed to execute. Removed {expected_shares} outstanding shares and refunded ${refund_amount:,.2f}."
+                        alerts.append(msg)
+                        
+                        log_trade(
+                            action="RECONCILE_REMOVE",
+                            ticker=ticker,
+                            shares=shortfall,
+                            price=buy_price,
+                            slot_key=slot_key,
+                            name=holding.get('name', ''),
+                            reason="Order failed to execute (0 actual shares)",
+                            status="failed_buy"
+                        )
+                    else:
+                        # Partial fill or partial missing shares
+                        holding['shares'] = actual_shares
+                        msg = f"Reconciliation: Discrepancy for {ticker} in Slot {slot_key}. Expected {expected_shares}, found {actual_shares}. Refunded partial unfilled amount of ${refund_amount:,.2f}."
+                        alerts.append(msg)
+                        
+                        log_trade(
+                            action="RECONCILE_ADJUST",
+                            ticker=ticker,
+                            shares=shortfall,
+                            price=buy_price,
+                            slot_key=slot_key,
+                            name=holding.get('name', ''),
+                            reason=f"Partial fill/mismatch ({expected_shares} -> {actual_shares})",
+                            status="active"
+                        )
+                        
+                    # Refund the cash balance to the slot
+                    current_cash = float(slot_data.get('cash_balance', 0.0))
+                    slot_data['cash_balance'] = round(current_cash + refund_amount, 2)
+                    state_changed = True
+
+            # Clean up the slot if it has no active holdings at all after reconciliation
+            still_active = [h for h in slot_data.get('holdings', []) if h.get('status') == 'active']
+            if not still_active and state_changed:
+                slot_data['status'] = 'empty'
+                msg = f"Reconciliation: Slot {slot_key} became empty after failed limits. Reverted to empty status with cash balance ${slot_data['cash_balance']:,.2f}."
+                alerts.append(msg)
+
+    if state_changed:
+        _save_state(state)
+        
+    return alerts
 
 def get_active_holdings_for_monitoring():
     """
@@ -294,7 +376,7 @@ def load_value_history():
         with open(VALUE_HISTORY_FILE, 'r', encoding='utf-8') as f:
             return json.load(f)
     except Exception as e:
-        print(f"Error loading value history: {e}")
+        logger.error("Error loading value history: %s", e)
         return []
 
 def save_daily_portfolio_value(date_str, total_value):
@@ -322,7 +404,7 @@ def save_daily_portfolio_value(date_str, total_value):
             json.dump(history, f, indent=2, ensure_ascii=False)
         os.replace(temp_file, VALUE_HISTORY_FILE)
     except Exception as e:
-        print(f"Error saving value history: {e}")
+        logger.error("Error saving value history: %s", e)
 
 def calculate_portfolio_metrics():
     """

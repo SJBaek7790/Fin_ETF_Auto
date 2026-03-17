@@ -1,21 +1,25 @@
 import os
 import time
 import json
+import logging
 import pandas as pd
 import numpy as np
 import asyncio
 import telegram
 import warnings
 import sys
+import config
 from datetime import datetime, timedelta
 from html import escape
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from google import genai
 from google.genai import types
 
+from log_config import setup_logging, get_logger, get_log_filepath
 from common import (
-    send_telegram_message_async, send_telegram_document_async,
-    get_etf_ticker_list_wrapper, get_etf_ohlcv_by_date_wrapper, get_etf_ticker_name_wrapper
+    send_telegram_document_async,
+    get_etf_ticker_list_wrapper, get_etf_ohlcv_by_date_wrapper, get_etf_ticker_name_wrapper,
+    is_us_market_open_today
 )
 
 import db_manager
@@ -23,6 +27,7 @@ import kis_api
 
 warnings.filterwarnings('ignore')
 
+logger = get_logger(__name__)
 
 # --- CONFIG ---
 TOKEN = os.getenv('TELEGRAM_TOKEN')
@@ -30,7 +35,6 @@ CHAT_ID = os.getenv('CHAT_ID')
 
 # Basic Settings
 EXCLUDE_KEYWORDS = ['2X', '3X', '-1X', '-2X', '-3X', 'Ultra', 'Bull', 'Bear', 'Inverse', 'Short', 'VIX', 'ETN', 'Target', 'Duration']
-MIN_AUM = 100
 MIN_AVG_TRADING = 10000000
 EPSILON = 1e-8
 
@@ -173,16 +177,6 @@ def process_single_etf(ticker, benchmark_ret):
     except Exception:
         stats['filter'] = 'error'; return None, stats
 
-# --- TELEGRAM ---
-
-async def send_screening_message(filter_stats, bot, gemini_status="Gemini selected ETFs successfully."):
-    summary = (
-        f"<b>✅ ETF Screening Complete</b>\n"
-        f"Total Passed: {filter_stats['passed']} ETFs.\n"
-        f"{gemini_status}"
-    )
-    return summary
-
 
 # --- GEMINI SELECTION ---
 
@@ -192,11 +186,11 @@ DATA_DIR = 'data'
 def select_etfs_with_gemini(df_report):
     """Uses Gemini to select unique ETFs from the screened report."""
     if df_report.empty:
-        print("No ETFs to select from.")
+        logger.warning("No ETFs to select from.")
         return []
     
     if not GEMINI_API_KEY:
-        print("GEMINI_API_KEY not set. Falling back to top 7.")
+        logger.warning("GEMINI_API_KEY not set. Falling back to top 7.")
         return _fallback_top7(df_report)
 
     report_json = df_report.to_json(orient='records', force_ascii=False, indent=2)
@@ -266,16 +260,34 @@ The result MUST be output ONLY in the JSON array format below. Do NOT include an
         selected = json.loads(cleaned_text)
         
         if isinstance(selected, list):
-            print(f"Gemini selected ETFs successfully.")
+            # Validate against pre-screened universe to prevent LLM hallucinations
+            valid_tickers = set(df_report['Ticker'].astype(str))
+            validated_selected = []
+            
             for s in selected:
-                print(f"  - {s['Ticker']} {s['ETF Name']}: {s.get('Reason', 'N/A')}")
+                ticker = s.get('Ticker', '')
+                if ticker in valid_tickers:
+                    validated_selected.append(s)
+                else:
+                    logger.warning("Gemini hallucinated ticker '%s'. Rejecting from selection.", ticker)
+            
+            selected = validated_selected
+
+            if not selected:
+                logger.warning("Gemini returned no valid ETFs after filtering hallucinations. Falling back.")
+                return _fallback_top7(df_report)
+
+            logger.info("Gemini selected ETFs successfully.")
+            for s in selected:
+                logger.info("  - %s %s: %s", s['Ticker'], s['ETF Name'], s.get('Reason', 'N/A'))
             return selected
         else:
-            print(f"Gemini returned unexpected format (len={len(selected) if isinstance(selected, list) else 'N/A'}). Falling back.")
+            logger.warning("Gemini returned unexpected format (len=%s). Falling back.",
+                           len(selected) if isinstance(selected, list) else 'N/A')
             return _fallback_top7(df_report)
             
     except Exception as e:
-        print(f"Gemini API error: {e}. Falling back to top 7.")
+        logger.error("Gemini API error: %s. Falling back to top 7.", e)
         return _fallback_top7(df_report)
 
 def _fallback_top7(df_report):
@@ -292,7 +304,7 @@ def save_selected_etfs(selected, date_str):
     filename = os.path.join(DATA_DIR, f"selected_etfs_{date_str}_us.json")
     with open(filename, 'w', encoding='utf-8') as f:
         json.dump(selected, f, ensure_ascii=False, indent=2)
-    print(f"Saved selected ETFs to {filename}")
+    logger.info("Saved selected ETFs to %s", filename)
     return filename
 
 
@@ -300,17 +312,17 @@ import db_manager
 
 # --- HOLDINGS MONITOR ---
 
-async def check_holdings_monitor(screened_df, min_max_stats, benchmark_ret, bot):
+async def check_holdings_monitor(screened_df, min_max_stats, benchmark_ret):
     """
     Checks current active holdings (from db_manager) against thresholds.
     Returns list of tickers that triggered alerts.
     """
-    print("\n--- Starting Holdings Monitor ---")
+    logger.info("--- Starting Holdings Monitor ---")
     
     active_holdings = await asyncio.to_thread(db_manager.get_active_holdings_for_monitoring)
     if not active_holdings:
-        print("No active holdings found in portfolio state.")
-        return []
+        logger.info("No active holdings found in portfolio state.")
+        return [], []
 
     alerts = []
     alert_tickers = []
@@ -325,27 +337,27 @@ async def check_holdings_monitor(screened_df, min_max_stats, benchmark_ret, bot)
         ticker = str(h.get('ticker'))
         name = h.get('name')
         slot_key = h.get('slot')
-        print(f"Checking holding: {name} ({ticker}) in Slot {slot_key}...")
+        logger.info("Checking holding: %s (%s) in Slot %s...", name, ticker, slot_key)
         
         comp_score = None
 
         # 1. Try Lookup in screened results
         if ticker in screened_map:
-            print("  -> Found in screened results (Passed filters).")
+            logger.debug("  -> Found in screened results (Passed filters).")
             row = screened_map[ticker]
             comp_score = row['Composite Score']
             
         else:
             # 2. Not in screened_df — fetch and calculate
-            print("  -> Not in screened results. Fetching data...")
+            logger.debug("  -> Not in screened results. Fetching data...")
             data = await asyncio.to_thread(fetch_etf_data, ticker)
             if not data:
-                print(f"  -> Insufficient data for {name}")
+                logger.warning("  -> Insufficient data for %s", name)
                 continue 
             
             metrics = calculate_metrics(data, benchmark_ret)
             if not metrics:
-                 print(f"  -> Could not calc metrics for {name}")
+                 logger.warning("  -> Could not calc metrics for %s", name)
                  continue
 
             # Calculate Composite Score manually if stats exist
@@ -363,7 +375,7 @@ async def check_holdings_monitor(screened_df, min_max_stats, benchmark_ret, bot)
                     
                     comp_score = round(np.mean([s_ret3m, s_exrsi]), 2)
                 except Exception as e:
-                    print(f"  -> normalization error: {e}")
+                    logger.error("  -> normalization error: %s", e)
 
         # Check Thresholds
         triggered = []
@@ -377,46 +389,46 @@ async def check_holdings_monitor(screened_df, min_max_stats, benchmark_ret, bot)
 
             alerts.append(f"⚠️ <b>{safe_name}</b> ({safe_ticker}) [Slot {slot_key}]\n   " +"\n   ".join(safe_triggered))
             alert_tickers.append((ticker, slot_key, "Score < 40"))
-            print(f"  -> ALERT: {triggered}")
+            logger.warning("  -> ALERT: %s", triggered)
         else:
-            print(f"  -> OK (Comp: {comp_score})")
+            logger.info("  -> OK (Comp: %s)", comp_score)
 
     if alerts:
-        print("Holding alerts generated.")
+        logger.info("Holding alerts generated.")
     else:
-        print("No alerts for holdings.")
+        logger.info("No alerts for holdings.")
     
     return alert_tickers, alerts
 
 # --- MAIN ---
 
 async def main():
+    setup_logging("screening")
+    
+    if not is_us_market_open_today():
+        logger.info("US market is closed today. Skipping screening.")
+        return
+
     bot = telegram.Bot(token=TOKEN) if TOKEN and CHAT_ID else None
     
-    if bot:
-        await send_telegram_message_async("🚀 <b>ETF Screening Started</b>", bot)
-
-    print("Screening ETFs...")
+    logger.info("Screening ETFs...")
     
     # 0. Fetch Benchmark Data (SPY)
-    print("Fetching Benchmark (SPY) data...")
+    logger.info("Fetching Benchmark (SPY) data...")
     df_bm = await asyncio.to_thread(get_etf_ohlcv_by_date_wrapper, start_str, end_str, "SPY")
     if df_bm is None or df_bm.empty:
-        msg = "CRITICAL: Failed to fetch Benchmark data. Aborting."
-        print(msg)
-        if bot:
-            await send_telegram_message_async(f"❌ <b>ETF Screening Error</b>\n{msg}", bot)
+        logger.critical("Failed to fetch Benchmark data. Aborting.")
         return
 
     df_bm = df_bm.sort_index()
     benchmark_ret = df_bm['종가'].pct_change().dropna()
     
     etf_tickers = await asyncio.to_thread(get_etf_ticker_list_wrapper, end_str)
-    print(f"Found {len(etf_tickers)} ETF tickers for date {end_str}")
+    logger.info("Found %d ETF tickers for date %s", len(etf_tickers), end_str)
     results = []
     
     with ThreadPoolExecutor(max_workers=20) as executor:
-        futures = {executor.submit(process_single_etf, t, benchmark_ret): t for t in etf_tickers}
+        futures = {executor.submit(process_single_etf, t, benchmark_ret.copy()): t for t in etf_tickers}
         for future in as_completed(futures):
             res, stats = future.result()
             filter_stats['total'] += 1
@@ -449,7 +461,7 @@ async def main():
         df_final = df_sorted[output_columns].head(50)
         
         # --- STEP 1: Gemini selects 5~10 ETFs ---
-        print("\n=== Gemini ETF Selection ===")
+        logger.info("=== Gemini ETF Selection ===")
         selected = select_etfs_with_gemini(df_final)
         
         # --- NEW DB MANAGER LOGIC ---
@@ -461,42 +473,16 @@ async def main():
             data = await asyncio.to_thread(fetch_etf_data, ticker)
             if data and not data['close'].empty:
                 return round(float(data['close'].iloc[-1]), 2)
-            return 1.0 # Failsafe
+            return None  # Caller must handle None — never use a fallback price for real orders
             
-        sold_slots_msg = "" # Handled by monitor now. Keeps variable here so down-code string additions don't break.
-            
-            
-        gemini_status = "Gemini selected ETFs successfully." if selected else "Gemini failed to select ETFs."
-        if sold_slots_msg:
-            gemini_status += sold_slots_msg
-            
-        summary_msg = await send_screening_message(filter_stats, bot, gemini_status)
-        
-        # --- Fetch Portfolio Metrics from db_manager ---
-        metrics = await asyncio.to_thread(db_manager.calculate_portfolio_metrics)
-        if metrics:
-            metrics_msg = (
-                f"\n\n<b>📊 Portfolio Performance</b>\n"
-                f"• Total Value: ${metrics.get('current_value', 0):,.2f}\n"
-                f"• Cumulative Return: {metrics.get('total_return_pct', 0):.2f}%\n"
-                f"• CAGR: {metrics.get('cagr_pct', 0):.2f}%\n"
-                f"• MDD: {metrics.get('mdd_pct', 0):.2f}%\n"
-                f"• Current Drawdown: {metrics.get('current_dd_pct', 0):.2f}%"
-            )
-            summary_msg += metrics_msg
-        
         if selected:
             # Save dated selection file
             json_path = save_selected_etfs(selected, end_str)
             
-            # Send the JSON file via Telegram
-            if bot:
-                await send_telegram_document_async(json_path, caption=f"US ETF Selection Results ({end_str})", bot=bot)
-            
             # 2. Buy into an empty slot
             empty_slot = await asyncio.to_thread(db_manager.get_empty_slot)
             if empty_slot:
-                print(f"\n=== Buying into Slot {empty_slot} ===")
+                logger.info("=== Buying into Slot %s ===", empty_slot)
                 target_sell_date = (datetime.now() + timedelta(days=28)).strftime("%Y-%m-%d")
                 
                 # Allocation Logic
@@ -506,7 +492,7 @@ async def main():
                 
                 if allocated_usd == 0.0:
                     # First run bootstrap: Get total evaluation and divide by number of empty unallocated slots
-                    print("Initial bootstrap: Fetching total USD to divide among unallocated slots.")
+                    logger.info("Initial bootstrap: Fetching total USD to divide among unallocated slots.")
                     total_usd = await asyncio.to_thread(kis_api.get_available_usd)
                     unallocated_slots = [k for k, v in state.get("slots", {}).items() if v.get("status") == "empty" and v.get("cash_balance", 0.0) == 0.0]
                     
@@ -518,7 +504,7 @@ async def main():
                                 state["slots"][k]["cash_balance"] = allocated_usd        
                         await asyncio.to_thread(db_manager._save_state, state) # Save pre-allocations under the hood
                 
-                print(f"Allocated USD for Slot {empty_slot}: ${allocated_usd:,.2f}")
+                logger.info("Allocated USD for Slot %s: $%s", empty_slot, f"{allocated_usd:,.2f}")
                 
                 usd_per_etf = allocated_usd / len(selected)
                 
@@ -530,6 +516,9 @@ async def main():
                     n = str(entry.get('ETF Name', entry.get('name', '')))
                     
                     price = await get_current_price(t)
+                    if price is None:
+                        logger.warning("Price data unavailable for %s. Skipping buy.", t)
+                        continue
                     # Apply a 3% cash buffer to mitigate gap-up opening prices exceeding available funds
                     shares_to_buy = int((usd_per_etf * 0.97) // price)
                     
@@ -537,13 +526,14 @@ async def main():
                         if kis_api.KIS_READY:
                             success = await asyncio.to_thread(kis_api.execute_kis_buy, t, shares_to_buy, price)
                             if not success:
-                                print(f"API buy failed for {t}. Skipping DB update.")
+                                logger.error("API buy failed for %s. Skipping DB update.", t)
                                 continue
                         else:
                             success = True
-                            print(f"MOCK MODE: Simulated buy for {t}.")
+                            logger.info("MOCK MODE: Simulated buy for %s.", t)
                             
-                        print(f"Executed buy for Slot {empty_slot} - {t} ({shares_to_buy} shares @ ${price}). Success: {success}")
+                        logger.info("Executed buy for Slot %s - %s (%d shares @ $%s). Success: %s",
+                                    empty_slot, t, shares_to_buy, price, success)
                         
                         actual_spent = shares_to_buy * price
                         total_spent += actual_spent
@@ -559,43 +549,28 @@ async def main():
                 remaining_cash = round(allocated_usd - total_spent, 2)
                 await asyncio.to_thread(db_manager.fill_slot, empty_slot, target_sell_date, new_holdings, today_str, initial_cash_balance=remaining_cash)
                 
-                buy_msg = f"\n✅ Bought {len(selected)} ETFs into Slot {empty_slot}. (Spent: ${round(total_spent, 2)})"
-                print(buy_msg)
-                if bot:
-                     await bot.send_message(chat_id=CHAT_ID, text=buy_msg)
+                logger.info("Bought %d ETFs into Slot %s. (Spent: $%s)", len(selected), empty_slot, round(total_spent, 2))
             else:
-                warn_msg = "\n⚠️ No empty slot available to buy new ETFs!"
-                print(warn_msg)
-                if bot:
-                     await bot.send_message(chat_id=CHAT_ID, text=warn_msg)
-            
-            # Send Message 2 (list of selected ETFs)
-            if bot:
-                selected_list_str = "[" + ", ".join([f"{s.get('Ticker', s.get('ticker'))} {s.get('ETF Name', s.get('name'))}" for s in selected]) + "]"
-                await bot.send_message(chat_id=CHAT_ID, text=selected_list_str)
+                logger.warning("No empty slot available to buy new ETFs!")
     else:
-        print("No ETFs passed screening.")
-        summary_msg = f"<b>✅ ETF Screening Complete</b>\nTotal Passed: 0 ETFs.\nNo ETFs to select."
+        logger.info("No ETFs passed screening.")
 
-    print("\n=== Filter Statistics ===")
+    logger.info("=== Filter Statistics ===")
     for k, v in filter_stats.items():
-        print(f"{k}: {v}")
+        logger.info("%s: %s", k, v)
 
     # --- STEP 3: Holdings Monitor (from DB Manager) ---
-    alert_tickers, alerts = await check_holdings_monitor(df, min_max_stats, benchmark_ret, bot)
+    alert_tickers, alerts = await check_holdings_monitor(df, min_max_stats, benchmark_ret)
 
-    # Append alerts to Message 1 and send
-    if bot:
-        if alerts:
-            summary_msg += "\n" + "\n".join(alerts)
-        else:
-            summary_msg += "\nNo structural alerts for holdings."
-        
-        await bot.send_message(chat_id=CHAT_ID, text=summary_msg, parse_mode='HTML')
+    if alerts:
+        for alert in alerts:
+            logger.warning("HOLDING ALERT: %s", alert)
+    else:
+        logger.info("No structural alerts for holdings.")
 
     # --- STEP 4: Trigger Stop-Loss on alerted ETFs ---
     if alert_tickers:
-        print(f"\n=== Auto-Sell: Triggering stop loss for {len(alert_tickers)} ETFs ===")
+        logger.info("=== Auto-Sell: Triggering stop loss for %d ETFs ===", len(alert_tickers))
         # Get active holdings so we can find shares
         active_holdings = await asyncio.to_thread(db_manager.get_active_holdings_for_monitoring)
         
@@ -607,29 +582,38 @@ async def main():
                     break
                     
             curr_price = await get_current_price(ticker)
+            if curr_price is None:
+                logger.warning("Price data unavailable for %s. Skipping stop-loss sell.", ticker)
+                continue
             
             if kis_api.KIS_READY and shares_to_sell > 0:
                 sell_success = await asyncio.to_thread(kis_api.execute_kis_sell, ticker, shares_to_sell, curr_price)
                 if not sell_success:
-                    print(f"API stop-loss sell failed for {ticker}. Skipping DB update.")
+                    logger.error("API stop-loss sell failed for %s. Skipping DB update.", ticker)
                     continue
                 else:
-                    print(f"Executed stop-loss sell for {ticker} ({shares_to_sell} shares).")
+                    logger.info("Executed stop-loss sell for %s (%d shares).", ticker, shares_to_sell)
             else:
-                print(f"MOCK MODE: Simulated stop-loss sell for {ticker}.")
+                logger.info("MOCK MODE: Simulated stop-loss sell for %s.", ticker)
 
             await asyncio.to_thread(db_manager.trigger_stop_loss, slot_key, ticker, reason, curr_price, shares_to_sell)
+
+    # --- FINAL: Send log file via Telegram ---
+    log_path = get_log_filepath()
+    if bot and log_path:
+        await send_telegram_document_async(log_path, caption=f"ETF Screening Log ({end_str})", bot=bot)
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except Exception as e:
-        print(f"Unhandled exception: {e}")
+        logger.critical("Unhandled exception: %s", e, exc_info=True)
+        # Attempt to send log file even on crash
         if TOKEN and CHAT_ID:
             try:
-                bot = telegram.Bot(token=TOKEN)
-                asyncio.run(send_telegram_message_async(f"❌ <b>ETF Screening Critical Error</b>\n<pre>{escape(str(e))}</pre>", bot))
+                log_path = get_log_filepath()
+                if log_path:
+                    bot = telegram.Bot(token=TOKEN)
+                    asyncio.run(send_telegram_document_async(log_path, caption=f"❌ ETF Screening CRASH Log", bot=bot))
             except Exception as inner_e:
-                print(f"Failed to send error telegram message: {inner_e}")
-
-
+                logger.error("Failed to send crash log via Telegram: %s", inner_e)

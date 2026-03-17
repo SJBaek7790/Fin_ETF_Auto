@@ -2,14 +2,18 @@ import os
 import sys
 import json
 import time
+import logging
 import pandas as pd
 from datetime import datetime, timedelta
 
-from common import send_telegram_message, get_market_ohlcv_wrapper
+from log_config import setup_logging, get_logger, get_log_filepath
+from common import send_telegram_document_sync, get_market_ohlcv_wrapper, is_us_market_open_today
 
 import kis_api
 
 import db_manager
+
+logger = get_logger(__name__)
 
 def get_price_history(code):
     try:
@@ -20,25 +24,49 @@ def get_price_history(code):
         if df is None or df.empty:
             return None
         
-        df.columns = ['open', 'high', 'low', 'close', 'volume', 'amount', 'rate'] if len(df.columns) == 7 else df.columns
+        # Explicitly check for expected column names instead of guessing by position
         if '종가' in df.columns:
             df = df.rename(columns={'종가': 'close'})
-        
-        if 'close' not in df.columns:
-             df.rename(columns={df.columns[3]: 'close'}, inplace=True)
+        elif 'Close' in df.columns:
+            df = df.rename(columns={'Close': 'close'})
+        elif 'close' in df.columns:
+            pass # Already named 'close'
+        else:
+            raise ValueError(f"Expected '종가' or 'Close' column missing for {code}. Available columns: {df.columns.tolist()}")
              
         df = df[['close']]
         return df
     except Exception as e:
-        print(f"Error fetching prices for {code} via wrapper: {e}")
+        logger.error("Error fetching prices for %s via wrapper: %s", code, e)
         return None
 
 def main():
-    print("Starting ETF Monitor...")
+    setup_logging("monitoring")
+
+    if not is_us_market_open_today():
+        logger.info("US market is closed today. Skipping monitoring.")
+        return
+
+    logger.info("Starting ETF Monitor...")
     
     all_alerts = []
     
     today_str = datetime.now().strftime("%Y-%m-%d")
+    
+    # 0. Daily Reconciliation Job
+    logger.info("--- Running Daily Order Reconciliation Job ---")
+    if kis_api.KIS_READY:
+        kis_holdings = kis_api.get_kis_holdings()
+        reconciliation_alerts = db_manager.reconcile_with_kis_holdings(kis_holdings)
+        if reconciliation_alerts:
+            for alert in reconciliation_alerts:
+                logger.warning("Reconciliation: %s", alert)
+                all_alerts.append(alert)
+            logger.info("Reconciliation complete. DB adjusted based on actual KIS holdings.")
+        else:
+            logger.info("Reconciliation complete. DB matches actual KIS holdings.")
+    else:
+        logger.info("KIS API not ready. Skipping Daily Reconciliation Job.")
     
     # 1. Clear slots whose target_sell_date is met
     slots_to_sell = db_manager.get_slots_to_sell(today_str)
@@ -58,20 +86,24 @@ def main():
                     shares = int(h.get("shares", 0))
                     
                     df_hist_temp = get_price_history(t)
-                    curr_price = df_hist_temp.iloc[-1]['close'] if df_hist_temp is not None and not df_hist_temp.empty else 1.0
+                    if df_hist_temp is None or df_hist_temp.empty:
+                        logger.warning("Price data unavailable for %s. Skipping time-stop sell.", t)
+                        all_holdings_sold = False
+                        continue
+                    curr_price = df_hist_temp.iloc[-1]['close']
                     
                     if kis_api.KIS_READY:
                         success = kis_api.execute_kis_sell(t, shares, curr_price)
                         if not success:
-                            print(f"API time-stop sell failed for {t}. Skipping DB update.")
+                            logger.error("API time-stop sell failed for %s. Skipping DB update.", t)
                             all_holdings_sold = False
                             continue
                     else:
                         success = True
-                        print(f"MOCK MODE: Simulated time-stop sell for {t}.")
+                        logger.info("MOCK MODE: Simulated time-stop sell for %s.", t)
                     
                     slot_proceeds += round(shares * curr_price, 2)
-                    print(f"Executed time-stop sell for Slot {s} - {t} ({shares} shares). Success: {success}")
+                    logger.info("Executed time-stop sell for Slot %s - %s (%d shares). Success: %s", s, t, shares, success)
                     
                     db_manager.log_trade(
                         action="SELL",
@@ -85,27 +117,29 @@ def main():
                     )
                     
             if not all_holdings_sold:
-                print(f"Slot {s} had failed sells. Aborting clear_slot to prevent desync.")
+                logger.error("Slot %s had failed sells. Aborting clear_slot to prevent desync.", s)
                 continue
 
         db_manager.clear_slot(s, returned_cash=slot_proceeds)
         sold_slots_msg += f"\nSlot {s} 4-week holding period met. Sold to cash (${slot_proceeds:,.2f})."
         
     if sold_slots_msg:
-        print(sold_slots_msg)
+        logger.info(sold_slots_msg)
         all_alerts.append(sold_slots_msg)
         
     
     # We only have one DB manager source now for the 4-slot system.
-    # We'll treat all tickers in the DB as US markets for now since the screener is US.
-    # Future enhancement could store the country code in the db_manager holding dict.
     active_holdings = db_manager.get_active_holdings_for_monitoring()
     
     if not active_holdings:
-        print("No active holdings found in portfolio.")
+        logger.info("No active holdings found in portfolio.")
+        # Send log file before returning
+        log_path = get_log_filepath()
+        if log_path:
+            send_telegram_document_sync(log_path, caption=f"ETF Monitoring Log ({today_str})")
         return
         
-    print(f"Found {len(active_holdings)} active holdings to monitor.")
+    logger.info("Found %d active holdings to monitor.", len(active_holdings))
     
     alerts = []
     alert_tickers = []
@@ -115,7 +149,7 @@ def main():
         name = stock_item.get('name')
         slot_key = stock_item.get('slot')
             
-        print(f"Checking {name} ({code}) [Slot {slot_key}]...")
+        logger.info("Checking %s (%s) [Slot %s]...", name, code, slot_key)
         time.sleep(0.1)
         
         df = get_price_history(code)
@@ -123,7 +157,7 @@ def main():
         if df is None or df.empty:
             # Handle potential delisting/liquidation
             consecutive_none = db_manager.increment_none_data_days(slot_key, code)
-            print(f"Data missing for {name} ({code}). Consecutive days: {consecutive_none}")
+            logger.warning("Data missing for %s (%s). Consecutive days: %d", name, code, consecutive_none)
             if consecutive_none >= 3:
                 alerts.append(f"🚨 EMERGENCY: {name} ({code}) [Slot {slot_key}] has returned NO DATA for {consecutive_none} consecutive days! Possible delisting or liquidation. Manual intervention required!")
             continue
@@ -133,7 +167,7 @@ def main():
             db_manager.reset_none_data_days(slot_key, code)
             
         if len(df) < 120:
-            print(f"Insufficient data for {name}")
+            logger.info("Insufficient data for %s", name)
             continue
             
         current_price = df.iloc[-1]['close']
@@ -148,7 +182,7 @@ def main():
             
         ma_broken = current_price < ma_120
         
-        print(f"price:{current_price}, ma_120:{ma_120:.2f}, 3m_ago:{price_3m_ago}")
+        logger.info("price:%s, ma_120:%.2f, 3m_ago:%s", current_price, ma_120, price_3m_ago)
         
         if ma_broken or momentum_dead:
             reason = []
@@ -165,7 +199,7 @@ def main():
         
         # Trigger stop-loss for alerted ETFs using DB manager
         if alert_tickers:
-            print(f"\n=== Auto-Sell: Triggering stop loss for {len(alert_tickers)} ETFs ===")
+            logger.info("=== Auto-Sell: Triggering stop loss for %d ETFs ===", len(alert_tickers))
             for ticker, slot_key, reason in alert_tickers:
                 
                 # Fetch accurate shares from db_manager memory
@@ -182,59 +216,67 @@ def main():
                      try:
                          # Get current price to calculate limit price
                          df_hist_temp = get_price_history(ticker)
-                         curr_price = df_hist_temp.iloc[-1]['close'] if df_hist_temp is not None and not df_hist_temp.empty else 1.0
+                         if df_hist_temp is None or df_hist_temp.empty:
+                             logger.warning("Price data unavailable for %s. Skipping stop-loss sell.", ticker)
+                             continue
+                         curr_price = df_hist_temp.iloc[-1]['close']
                          
                          sell_success = kis_api.execute_kis_sell(ticker, shares_to_sell, curr_price)
-                         print(f"Executed stop-loss limit sell for {ticker} ({shares_to_sell} shares). Success: {sell_success}")
+                         logger.info("Executed stop-loss limit sell for %s (%d shares). Success: %s", ticker, shares_to_sell, sell_success)
                      except Exception as e:
-                         print(f"Stop-loss KIS API sell error for {ticker}: {e}")
+                         logger.error("Stop-loss KIS API sell error for %s: %s", ticker, e)
                 
                 # 2. Prevent DB desync if API failed
                 if kis_api.KIS_READY and not sell_success:
-                    print(f"API stop-loss sell failed for {ticker}. Skipping DB update.")
+                    logger.error("API stop-loss sell failed for %s. Skipping DB update.", ticker)
                     continue
 
                 # 3. Get current price for record logging (fallback to Yahoo if live fails)
                 df_hist = get_price_history(ticker)
-                execute_price = df_hist.iloc[-1]['close'] if df_hist is not None and not df_hist.empty else 1.0
+                if df_hist is None or df_hist.empty:
+                    logger.warning("Price data unavailable for %s. Skipping DB stop-loss update.", ticker)
+                    continue
+                execute_price = df_hist.iloc[-1]['close']
                 
                 # 4. Update DB state
                 db_manager.trigger_stop_loss(slot_key, ticker, reason, execute_price, shares_to_sell)
     
     # Calculate Total Portfolio Value using KIS API Direct Fetch
     if kis_api.KIS_READY:
-        print("\n=== Fetching Daily Portfolio Value via KIS API ===")
+        logger.info("=== Fetching Daily Portfolio Value via KIS API ===")
         total_value = kis_api.get_total_portfolio_value()
         
         if total_value > 0.0:
             today_str = datetime.now().strftime("%Y-%m-%d")
             total_value = round(total_value, 2)
-            print(f"Total Portfolio Value: ${total_value:,.2f}")
+            logger.info("Total Portfolio Value: $%s", f"{total_value:,.2f}")
             db_manager.save_daily_portfolio_value(today_str, total_value)
         else:
-             print("Total Portfolio Value fetched as $0.00, check account configuration.")
+             logger.warning("Total Portfolio Value fetched as $0.00, check account configuration.")
     else:
-        print("\n=== KIS API Not Ready: Cannot fetch daily value ===")
+        logger.info("KIS API Not Ready: Cannot fetch daily value")
         
     if all_alerts:
-        message = "🚨 ETF Momentum Alert 🚨\n\n" + "\n\n".join(all_alerts)
-        print("Sending alert...")
-        print(message)
-        send_telegram_message(message)
+        for alert in all_alerts:
+            logger.warning("ALERT: %s", alert)
     else:
-        print("No alerts to send.")
+        logger.info("No alerts to send.")
+
+    # --- FINAL: Send log file via Telegram ---
+    log_path = get_log_filepath()
+    if log_path:
+        send_telegram_document_sync(log_path, caption=f"ETF Monitoring Log ({today_str})")
         
 if __name__ == "__main__":
     try:
         main()
     except Exception as e:
         import traceback
-        error_msg = traceback.format_exc()
-        safe_error = f"<pre>{error_msg}</pre>"
-        print(f"CRITICAL ERROR in etf_monitoring.py: {e}")
+        logger.critical("CRITICAL ERROR in etf_monitoring.py: %s", e, exc_info=True)
+        # Attempt to send log file even on crash
         try:
-            message = f"❌ <b>ETF Monitoring Critical Crash</b>\n{safe_error}"
-            send_telegram_message(message)
+            log_path = get_log_filepath()
+            if log_path:
+                send_telegram_document_sync(log_path, caption="❌ ETF Monitoring CRASH Log")
         except Exception as tel_e:
-            print(f"Failed to send crash report to Telegram: {tel_e}")
-
+            logger.error("Failed to send crash log to Telegram: %s", tel_e)
