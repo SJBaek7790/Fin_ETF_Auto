@@ -1,0 +1,10 @@
+pytest>=7.0
+pandas
+numpy
+google-genai
+python-telegram-bot
+FinanceDataReader
+yfinance
+exchange_calendars
+python-dotenv
+requests

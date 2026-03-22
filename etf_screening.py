@@ -219,75 +219,89 @@ Using Google Search, review the major news and macroeconomic environment from th
 The result MUST be output ONLY in the JSON array format below. Do NOT include any additional explanations or greetings outside the markdown code block.
 """
 
-    try:
-        client = genai.Client(api_key=GEMINI_API_KEY)
-        response = client.models.generate_content(
-            model='gemini-3.1-pro-preview',
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                # 1. Enable Google Search as a tool
-                tools=[types.Tool(google_search=types.GoogleSearch())],
-                
-                # 2. Set the thinking level to HIGH
-                thinking_config=types.ThinkingConfig(thinking_level=types.ThinkingLevel.HIGH),
+    client = genai.Client(api_key=GEMINI_API_KEY)
 
-                # 3. JSON Output
-                response_mime_type="application/json",
-                response_schema=types.Schema(
-                    type=types.Type.ARRAY,
-                    items=types.Schema(
-                        type=types.Type.OBJECT,
-                        properties={
-                            "Ticker": types.Schema(
-                                type=types.Type.STRING,
-                                description="Ticker of ETF (ex: SLV)"
-                            ),
-                            "ETF Name": types.Schema(
-                                type=types.Type.STRING,
-                                description="Official name of ETF"
-                            ),
-                            "Reason": types.Schema(
-                                type=types.Type.STRING,
-                                description="Selection Rationale: Based on the latest retrieved news and macro indicators, summarize in a single sentence the macroeconomic justification for the continued trend of this theme and how it contributes to portfolio diversification."
-                            )
-                        },
-                        required=["Ticker", "ETF Name", "Reason"]
+    MAX_RETRIES = 3
+    response = None
+
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            response = client.models.generate_content(
+                model='gemini-3.1-pro-preview',
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    # 1. Enable Google Search as a tool
+                    tools=[types.Tool(google_search=types.GoogleSearch())],
+                    
+                    # 2. Set the thinking level to HIGH
+                    thinking_config=types.ThinkingConfig(thinking_level=types.ThinkingLevel.HIGH),
+
+                    # 3. JSON Output
+                    response_mime_type="application/json",
+                    response_schema=types.Schema(
+                        type=types.Type.ARRAY,
+                        items=types.Schema(
+                            type=types.Type.OBJECT,
+                            properties={
+                                "Ticker": types.Schema(
+                                    type=types.Type.STRING,
+                                    description="Ticker of ETF (ex: SLV)"
+                                ),
+                                "ETF Name": types.Schema(
+                                    type=types.Type.STRING,
+                                    description="Official name of ETF"
+                                ),
+                                "Reason": types.Schema(
+                                    type=types.Type.STRING,
+                                    description="Selection Rationale: Based on the latest retrieved news and macro indicators, summarize in a single sentence the macroeconomic justification for the continued trend of this theme and how it contributes to portfolio diversification."
+                                )
+                            },
+                            required=["Ticker", "ETF Name", "Reason"]
+                        )
                     )
                 )
             )
-        )
+            break  # Success — exit retry loop
+        except Exception as e:
+            logger.warning("Gemini API attempt %d/%d failed: %s", attempt, MAX_RETRIES, e)
+            if attempt == MAX_RETRIES:
+                logger.error("All %d Gemini API attempts failed. Falling back to top 7.", MAX_RETRIES)
+                return _fallback_top7(df_report)
+            time.sleep(2 ** attempt)  # Exponential backoff: 2s, 4s
+
+    # --- Parse and validate the successful response ---
+    try:
         cleaned_text = response.text.strip().removeprefix('```json').removesuffix('```').strip()
         selected = json.loads(cleaned_text)
-        
-        if isinstance(selected, list):
-            # Validate against pre-screened universe to prevent LLM hallucinations
-            valid_tickers = set(df_report['Ticker'].astype(str))
-            validated_selected = []
-            
-            for s in selected:
-                ticker = s.get('Ticker', '')
-                if ticker in valid_tickers:
-                    validated_selected.append(s)
-                else:
-                    logger.warning("Gemini hallucinated ticker '%s'. Rejecting from selection.", ticker)
-            
-            selected = validated_selected
-
-            if not selected:
-                logger.warning("Gemini returned no valid ETFs after filtering hallucinations. Falling back.")
-                return _fallback_top7(df_report)
-
-            logger.info("Gemini selected ETFs successfully.")
-            for s in selected:
-                logger.info("  - %s %s: %s", s['Ticker'], s['ETF Name'], s.get('Reason', 'N/A'))
-            return selected
-        else:
-            logger.warning("Gemini returned unexpected format (len=%s). Falling back.",
-                           len(selected) if isinstance(selected, list) else 'N/A')
-            return _fallback_top7(df_report)
-            
     except Exception as e:
-        logger.error("Gemini API error: %s. Falling back to top 7.", e)
+        logger.error("Gemini response parsing error: %s. Falling back to top 7.", e)
+        return _fallback_top7(df_report)
+
+    if isinstance(selected, list):
+        # Validate against pre-screened universe to prevent LLM hallucinations
+        valid_tickers = set(df_report['Ticker'].astype(str))
+        validated_selected = []
+        
+        for s in selected:
+            ticker = s.get('Ticker', '')
+            if ticker in valid_tickers:
+                validated_selected.append(s)
+            else:
+                logger.warning("Gemini hallucinated ticker '%s'. Rejecting from selection.", ticker)
+        
+        selected = validated_selected
+
+        if not selected:
+            logger.warning("Gemini returned no valid ETFs after filtering hallucinations. Falling back.")
+            return _fallback_top7(df_report)
+
+        logger.info("Gemini selected ETFs successfully.")
+        for s in selected:
+            logger.info("  - %s %s: %s", s['Ticker'], s['ETF Name'], s.get('Reason', 'N/A'))
+        return selected
+    else:
+        logger.warning("Gemini returned unexpected format (len=%s). Falling back.",
+                       len(selected) if isinstance(selected, list) else 'N/A')
         return _fallback_top7(df_report)
 
 def _fallback_top7(df_report):
@@ -310,95 +324,8 @@ def save_selected_etfs(selected, date_str):
 
 import db_manager
 
-# --- HOLDINGS MONITOR ---
+# --- MINIMAL FALLBACK NEEDED? NO. DB MANAGER HANDLES HOLDINGS MONITOR ---
 
-async def check_holdings_monitor(screened_df, min_max_stats, benchmark_ret):
-    """
-    Checks current active holdings (from db_manager) against thresholds.
-    Returns list of tickers that triggered alerts.
-    """
-    logger.info("--- Starting Holdings Monitor ---")
-    
-    active_holdings = await asyncio.to_thread(db_manager.get_active_holdings_for_monitoring)
-    if not active_holdings:
-        logger.info("No active holdings found in portfolio state.")
-        return [], []
-
-    alerts = []
-    alert_tickers = []
-    
-    screened_map = {}
-    if not screened_df.empty:
-        screened_df_copy = screened_df.copy()
-        screened_df_copy['Ticker'] = screened_df_copy['Ticker'].astype(str)
-        screened_map = screened_df_copy.set_index('Ticker').to_dict('index')
-
-    for h in active_holdings:
-        ticker = str(h.get('ticker'))
-        name = h.get('name')
-        slot_key = h.get('slot')
-        logger.info("Checking holding: %s (%s) in Slot %s...", name, ticker, slot_key)
-        
-        comp_score = None
-
-        # 1. Try Lookup in screened results
-        if ticker in screened_map:
-            logger.debug("  -> Found in screened results (Passed filters).")
-            row = screened_map[ticker]
-            comp_score = row['Composite Score']
-            
-        else:
-            # 2. Not in screened_df — fetch and calculate
-            logger.debug("  -> Not in screened results. Fetching data...")
-            data = await asyncio.to_thread(fetch_etf_data, ticker)
-            if not data:
-                logger.warning("  -> Insufficient data for %s", name)
-                continue 
-            
-            metrics = calculate_metrics(data, benchmark_ret)
-            if not metrics:
-                 logger.warning("  -> Could not calc metrics for %s", name)
-                 continue
-
-            # Calculate Composite Score manually if stats exist
-            if min_max_stats:
-                try:
-                    def normalize(val, col):
-                        mn, mx = min_max_stats[col]['min'], min_max_stats[col]['max']
-                        if mx == mn: return 0
-                        if col == 'EXRSI3M':
-                            return (mx - val) / (mx - mn) * 100
-                        return (val - mn) / (mx - mn) * 100
-
-                    s_ret3m = normalize(metrics['RET3M'], 'RET3M')
-                    s_exrsi = normalize(metrics['EXRSI3M'], 'EXRSI3M')
-                    
-                    comp_score = round(np.mean([s_ret3m, s_exrsi]), 2)
-                except Exception as e:
-                    logger.error("  -> normalization error: %s", e)
-
-        # Check Thresholds
-        triggered = []
-        if comp_score is not None and comp_score < 40:
-             triggered.append(f"Composite Score {comp_score} < 40")
-             
-        if triggered:
-            safe_name = escape(name)
-            safe_ticker = escape(ticker)
-            safe_triggered = [escape(t) for t in triggered]
-
-            alerts.append(f"⚠️ <b>{safe_name}</b> ({safe_ticker}) [Slot {slot_key}]\n   " +"\n   ".join(safe_triggered))
-            alert_tickers.append((ticker, slot_key, "Score < 40"))
-            logger.warning("  -> ALERT: %s", triggered)
-        else:
-            logger.info("  -> OK (Comp: %s)", comp_score)
-
-    if alerts:
-        logger.info("Holding alerts generated.")
-    else:
-        logger.info("No alerts for holdings.")
-    
-    return alert_tickers, alerts
 
 # --- MAIN ---
 
@@ -559,44 +486,8 @@ async def main():
     for k, v in filter_stats.items():
         logger.info("%s: %s", k, v)
 
-    # --- STEP 3: Holdings Monitor (from DB Manager) ---
-    alert_tickers, alerts = await check_holdings_monitor(df, min_max_stats, benchmark_ret)
-
-    if alerts:
-        for alert in alerts:
-            logger.warning("HOLDING ALERT: %s", alert)
-    else:
-        logger.info("No structural alerts for holdings.")
-
-    # --- STEP 4: Trigger Stop-Loss on alerted ETFs ---
-    if alert_tickers:
-        logger.info("=== Auto-Sell: Triggering stop loss for %d ETFs ===", len(alert_tickers))
-        # Get active holdings so we can find shares
-        active_holdings = await asyncio.to_thread(db_manager.get_active_holdings_for_monitoring)
-        
-        for ticker, slot_key, reason in alert_tickers:
-            shares_to_sell = 0
-            for h in active_holdings:
-                if h.get('ticker') == ticker and h.get('slot') == slot_key:
-                    shares_to_sell = int(h.get('shares', 0))
-                    break
-                    
-            curr_price = await get_current_price(ticker)
-            if curr_price is None:
-                logger.warning("Price data unavailable for %s. Skipping stop-loss sell.", ticker)
-                continue
-            
-            if kis_api.KIS_READY and shares_to_sell > 0:
-                sell_success = await asyncio.to_thread(kis_api.execute_kis_sell, ticker, shares_to_sell, curr_price)
-                if not sell_success:
-                    logger.error("API stop-loss sell failed for %s. Skipping DB update.", ticker)
-                    continue
-                else:
-                    logger.info("Executed stop-loss sell for %s (%d shares).", ticker, shares_to_sell)
-            else:
-                logger.info("MOCK MODE: Simulated stop-loss sell for %s.", ticker)
-
-            await asyncio.to_thread(db_manager.trigger_stop_loss, slot_key, ticker, reason, curr_price, shares_to_sell)
+    # Note: Holdings monitoring and stop-loss logic have been moved completely to `etf_monitoring.py`.
+    # `etf_screening.py` only handles the selection process and purchasing of top momentum ETFs.
 
     # --- FINAL: Send log file via Telegram ---
     log_path = get_log_filepath()

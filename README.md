@@ -6,13 +6,13 @@ This code is meant to run via Github Actions.
 ## System Architecture
 This project divides capital into 4 "slots" and systematically manages them dynamically.
 
-1. **ETF Screening (Every Thursday, 30 minutes before market close)** 
+1. **ETF Screening (Every Thursday 14:00 in US time)** 
    - Uses `etf_screening.py`.
    - Searches for momentum US ETFs, scores them based on 3-month return rates (`RET3M`) and 60-day RSI (`EXRSI3M`). RET3M is better when higher, EXRSI3M is better when lower, avoiding overbought ETFs than benchmark.
    - Shortlists 5-10 ETFs via **Gemini AI** with macro sentiment.
    - Allocates the exact tracked slot `cash_balance` specifically to buy the shortlisted ETFs. ETFs are bought equally, using Market On Close limit orders via KIS.
 
-2. **Daily Monitoring (Every Weekday Morning, 30 minutes before market open)**
+2. **Daily Monitoring (Every Weekday Morning 10:30 in US time)**
    - Uses `etf_monitoring.py`.
    - Iterates through actively held ETF tickers across all slots.
    - If an ETF's price drops below its 120-Day moving average or drops below its price from 3 months prior, the **Stop-Loss** mechanism is triggered.
