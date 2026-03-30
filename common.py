@@ -25,6 +25,7 @@ import FinanceDataReader as fdr
 import yfinance as yf
 import exchange_calendars as xcals
 from datetime import datetime
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +48,8 @@ def send_telegram_message(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML"}
     try:
-        requests.post(url, json=payload, timeout=10)
+        resp = requests.post(url, json=payload, timeout=10)
+        resp.raise_for_status()
     except Exception as e:
         logger.error("Failed to send Telegram message: %s", e)
 
@@ -82,7 +84,8 @@ def send_telegram_document_sync(file_path, caption=None):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument"
         with open(file_path, 'rb') as f:
-            requests.post(url, data={"chat_id": CHAT_ID, "caption": caption or ""}, files={"document": f}, timeout=30)
+            resp = requests.post(url, data={"chat_id": CHAT_ID, "caption": caption or ""}, files={"document": f}, timeout=30)
+            resp.raise_for_status()
     except Exception as e:
         logger.error("Failed to send Telegram document (sync): %s", e)
 
@@ -96,17 +99,28 @@ def _get_etf_listing():
     if _ETF_LISTING_CACHE is None or _ETF_LISTING_CACHE.empty:
         try:
             _ETF_LISTING_CACHE = fdr.StockListing('ETF/KR')
+            if _ETF_LISTING_CACHE is None or _ETF_LISTING_CACHE.empty:
+                logger.warning("ETF listing returned empty data. Cache will retry on next call.")
+                _ETF_LISTING_CACHE = None
         except Exception as e:
             logger.error("Error fetching ETF listings for KR via fdr: %s", e)
-            _ETF_LISTING_CACHE = pd.DataFrame()
-    return _ETF_LISTING_CACHE
+            _ETF_LISTING_CACHE = None
+    return _ETF_LISTING_CACHE if _ETF_LISTING_CACHE is not None else pd.DataFrame()
 
 def get_market_ohlcv_wrapper(start_date, end_date, ticker):
     """Wrapper using FinanceDataReader with yfinance fallback for Korean ETFs."""
     try:
         start_dt = datetime.strptime(start_date, '%Y%m%d').strftime('%Y-%m-%d')
         end_dt = datetime.strptime(end_date, '%Y%m%d').strftime('%Y-%m-%d')
-        df = fdr.DataReader(ticker, start_dt, end_dt)
+        
+        df = None
+        for attempt in range(3):
+            try:
+                df = fdr.DataReader(ticker, start_dt, end_dt)
+                break
+            except Exception as e:
+                logger.warning("fdr.DataReader attempt %s failed for %s: %s", attempt+1, ticker, e)
+                time.sleep(1)
         
         if df is None or df.empty:
             logger.warning("Empty data from fdr for %s, falling back to yfinance", ticker)

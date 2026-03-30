@@ -6,6 +6,7 @@ from datetime import datetime
 import fcntl
 import contextlib
 import threading
+import functools
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +20,10 @@ _lock_local = threading.local()
 
 @contextlib.contextmanager
 def portfolio_lock():
+    """
+    Acquires an exclusive file lock on the portfolio state.
+    Requires UNIX/Linux due to `fcntl` usage. Will not work on Windows.
+    """
     os.makedirs(DATA_DIR, exist_ok=True)
     if not hasattr(_lock_local, 'lock_count'):
         _lock_local.lock_count = 0
@@ -40,6 +45,7 @@ def portfolio_lock():
             _lock_local.lock_fd = None
 
 def with_portfolio_lock(func):
+    @functools.wraps(func)
     def wrapper(*args, **kwargs):
         with portfolio_lock():
             return func(*args, **kwargs)
@@ -81,6 +87,11 @@ def _save_state(state):
         logger.error("Error saving state: %s", e)
         return False
 
+@with_portfolio_lock
+def save_portfolio_state_locked(state):
+    """Public wrapper to save state safely with lock."""
+    return _save_state(state)
+
 def _load_trade_history():
     """Loads the trade history from JSON."""
     if not os.path.exists(TRADE_HISTORY_FILE):
@@ -104,10 +115,9 @@ def _save_trade_history(history):
         logger.error("Error saving trade history: %s", e)
         return False
 
-@with_portfolio_lock
-def log_trade(action, ticker, shares, price, slot_key, name="", reason="", status=""):
+def _log_trade_unlocked(action, ticker, shares, price, slot_key, name="", reason="", status=""):
     """
-    Logs a trade (BUY, SELL) to the trade history file.
+    Internal unlocked helper to log a trade (BUY, SELL) to the trade history file.
     """
     history = _load_trade_history()
     
@@ -127,6 +137,13 @@ def log_trade(action, ticker, shares, price, slot_key, name="", reason="", statu
     _save_trade_history(history)
     logger.info("Logged %s trade for %s (%s shares @ %s) in Slot %s.", action, ticker, shares, price, slot_key)
 
+@with_portfolio_lock
+def log_trade(action, ticker, shares, price, slot_key, name="", reason="", status=""):
+    """
+    Public wrapper to log a trade with locking.
+    """
+    _log_trade_unlocked(action, ticker, shares, price, slot_key, name, reason, status)
+
 def get_portfolio_state():
     """Returns the current portfolio state map."""
     return _load_state()
@@ -145,7 +162,7 @@ def get_empty_slot():
 def fill_slot(slot_key, target_sell_date, holdings, buy_date=None, initial_cash_balance=0.0):
     """
     Fills an empty slot with selected ETFs.
-    holdings format: list of dicts [{'ticker': 'SPY', 'name': 'SPDR...', 'shares': 10, 'buy_price': 500.0, 'status': 'active'}, ...]
+    holdings format: list of dicts [{'ticker': '069500', 'name': 'KODEX 200', 'shares': 10, 'buy_price': 500.0, 'status': 'active'}, ...]
     """
     state = _load_state()
     if not state or slot_key not in state.get('slots', {}):
@@ -165,7 +182,7 @@ def fill_slot(slot_key, target_sell_date, holdings, buy_date=None, initial_cash_
     
     # Log the BUY trades
     for h in holdings:
-        log_trade(
+        _log_trade_unlocked(
             action="BUY",
             ticker=h.get('ticker'),
             shares=h.get('shares'),
@@ -223,7 +240,7 @@ def trigger_stop_loss(slot_key, ticker_to_stop, sell_reason, sell_price, execute
             slot['cash_balance'] = round(slot.get('cash_balance', 0.0) + proceeds, 0)
             
             # Log the SELL trade
-            log_trade(
+            _log_trade_unlocked(
                 action="SELL",
                 ticker=str(ticker_to_stop),
                 shares=executed_shares,
@@ -369,7 +386,7 @@ def reconcile_with_kis_holdings(kis_holdings):
                         msg = f"🚨 EMERGENCY: Reconciliation: CRITICAL DISCREPANCY for {ticker} in Slot {slot_key}. Expected {expected_shares}, found {actual_shares}. Suspected Corporate Action/Reverse Split. Holding locked. Manual intervention required!"
                         alerts.append(msg)
                         
-                        log_trade(
+                        _log_trade_unlocked(
                             action="RECONCILE_SUSPEND",
                             ticker=ticker,
                             shares=shortfall,
@@ -388,7 +405,7 @@ def reconcile_with_kis_holdings(kis_holdings):
                         msg = f"Reconciliation: Buy order for {ticker} in Slot {slot_key} failed to execute. Removed {expected_shares} outstanding shares and refunded ₩{refund_amount:,.0f}."
                         alerts.append(msg)
                         
-                        log_trade(
+                        _log_trade_unlocked(
                             action="RECONCILE_REMOVE",
                             ticker=ticker,
                             shares=shortfall,
@@ -404,7 +421,7 @@ def reconcile_with_kis_holdings(kis_holdings):
                         msg = f"Reconciliation: Discrepancy for {ticker} in Slot {slot_key}. Expected {expected_shares}, found {actual_shares}. Refunded partial unfilled amount of ₩{refund_amount:,.0f}."
                         alerts.append(msg)
                         
-                        log_trade(
+                        _log_trade_unlocked(
                             action="RECONCILE_ADJUST",
                             ticker=ticker,
                             shares=shortfall,
@@ -428,7 +445,7 @@ def reconcile_with_kis_holdings(kis_holdings):
                     msg = f"⚠️ WARNING: Reconciliation: Discrepancy for {ticker} in Slot {slot_key}. Expected {expected_shares}, found {actual_shares}. DB undercounted by {overage}. Adjusted DB actively upward."
                     alerts.append(msg)
                     
-                    log_trade(
+                    _log_trade_unlocked(
                         action="RECONCILE_UPWARD",
                         ticker=ticker,
                         shares=overage,
@@ -449,7 +466,20 @@ def reconcile_with_kis_holdings(kis_holdings):
 
     if state_changed:
         _save_state(state)
-        
+
+    # 2. Check for orphaned / rogue holdings in actual_map that aren't in DB
+    all_known_tickers = set()
+    for slot_data in state.get('slots', {}).values():
+        if slot_data.get('status') == 'invested':
+            for h in slot_data.get('holdings', []):
+                if h.get('status') == 'active':
+                    all_known_tickers.add(str(h.get('ticker')))
+
+    for actual_ticker, actual_shares in actual_map.items():
+        if actual_ticker not in all_known_tickers and actual_shares > 0:
+            msg = f"🔍 ORPHAN ALERT: Found {actual_shares} shares of undocumented ticker {actual_ticker} in KIS account. This is not tracked by any portfolio slot!"
+            alerts.append(msg)
+            
     return alerts
 
 def get_active_holdings_for_monitoring():

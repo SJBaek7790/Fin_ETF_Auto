@@ -19,6 +19,7 @@ import telegram
 import warnings
 import sys
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from html import escape
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from google import genai
@@ -26,7 +27,7 @@ from google.genai import types
 
 from log_config import setup_logging, get_logger, get_log_filepath
 from common import (
-    send_telegram_document_async,
+    send_telegram_document_async, send_telegram_document_sync,
     get_etf_ticker_list_wrapper, get_etf_ohlcv_by_date_wrapper, get_etf_ticker_name_wrapper,
     is_kr_market_open_today
 )
@@ -58,24 +59,11 @@ EPSILON = 1e-8
 # Benchmark: KODEX 200 (069500) — Korea's equivalent of SPY
 BENCHMARK_TICKER = "069500"
 
-# Dates
-end_date = datetime.now()
-start_date = end_date - timedelta(days=200)
-end_str = end_date.strftime('%Y%m%d')
-start_str = start_date.strftime('%Y%m%d')
-
-# Global Filter Stats
-filter_stats = {
-    'total': 0, 'no_data': 0, 'insufficient_data': 0, 'excluded_keywords': 0,
-    'low_trading': 0, 'failed_momentum': 0,
-    'missing_metrics': 0, 'passed': 0, 'error': 0
-}
-
 # --- CORE LOGIC ---
 
-def calculate_rsi(series, period=14):
-    """Calculates RSI on a pandas Series."""
-    delta = series
+def calculate_rsi(returns, period=14):
+    """Calculates RSI on a pandas Series of returns or deltas."""
+    delta = returns
     
     gain = delta.where(delta > 0, 0)
     loss = -delta.where(delta < 0, 0)
@@ -87,7 +75,7 @@ def calculate_rsi(series, period=14):
     rsi = 100 - (100 / (1 + rs))
     return rsi
 
-def fetch_etf_data(ticker):
+def fetch_etf_data(ticker, start_str, end_str):
     """Fetches generic ETF data (OHLCV, Name, trading value approximation)."""
     try:
         etf_name = get_etf_ticker_name_wrapper(ticker)
@@ -146,11 +134,11 @@ def calculate_metrics(data, benchmark_ret):
         'EXRSI3M': round(ex_rsi_3m, 2)
     }
 
-def process_single_etf(ticker, benchmark_ret):
+def process_single_etf(ticker, benchmark_ret, start_str, end_str):
     """Main screening function for a single ETF."""
     stats = {}
     try:
-        data = fetch_etf_data(ticker)
+        data = fetch_etf_data(ticker, start_str, end_str)
         if not data:
             stats['filter'] = 'no_data'; return None, stats
         
@@ -335,6 +323,17 @@ async def main():
 
     bot = telegram.Bot(token=TOKEN) if TOKEN and CHAT_ID else None
     
+    end_date = datetime.now(tz=ZoneInfo("Asia/Seoul"))
+    start_date = end_date - timedelta(days=200)
+    end_str = end_date.strftime('%Y%m%d')
+    start_str = start_date.strftime('%Y%m%d')
+
+    filter_stats = {
+        'total': 0, 'no_data': 0, 'insufficient_data': 0, 'excluded_keywords': 0,
+        'low_trading': 0, 'failed_momentum': 0,
+        'missing_metrics': 0, 'passed': 0, 'error': 0
+    }
+    
     logger.info("Screening Korean ETFs...")
     
     # 0. Fetch Benchmark Data (KODEX 200)
@@ -351,8 +350,8 @@ async def main():
     logger.info("Found %d ETF tickers for date %s", len(etf_tickers), end_str)
     results = []
     
-    with ThreadPoolExecutor(max_workers=20) as executor:
-        futures = {executor.submit(process_single_etf, t, benchmark_ret.copy()): t for t in etf_tickers}
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = {executor.submit(process_single_etf, t, benchmark_ret.copy(), start_str, end_str): t for t in etf_tickers}
         for future in as_completed(futures):
             res, stats = future.result()
             filter_stats['total'] += 1
@@ -372,10 +371,13 @@ async def main():
             mn = df[col].min()
             mx = df[col].max()
             min_max_stats[col] = {'min': mn, 'max': mx}
-            if col == 'EXRSI3M':
-                df[f'S_{col}'] = (mx - df[col]) / (mx - mn) * 100
+            rng = mx - mn
+            if rng < EPSILON:
+                df[f'S_{col}'] = 50.0
+            elif col == 'EXRSI3M':
+                df[f'S_{col}'] = (mx - df[col]) / rng * 100
             else:
-                df[f'S_{col}'] = (df[col] - mn) / (mx - mn) * 100
+                df[f'S_{col}'] = (df[col] - mn) / rng * 100
         
         df = df.rename(columns={'S_RET3M': 'RET3M Score', 'S_EXRSI3M': 'EXRSI3M Score'})
         df['Composite Score'] = df[['RET3M Score', 'EXRSI3M Score']].mean(axis=1).round(2)
@@ -390,10 +392,10 @@ async def main():
         
         # --- DB MANAGER + KIS ORDER EXECUTION ---
         await asyncio.to_thread(db_manager.init_state)
-        today_str = datetime.now().strftime("%Y-%m-%d")
+        today_str = datetime.now(tz=ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d")
         
         async def get_current_price(ticker):
-            data = await asyncio.to_thread(fetch_etf_data, ticker)
+            data = await asyncio.to_thread(fetch_etf_data, ticker, start_str, end_str)
             if data and not data['close'].empty:
                 return int(float(data['close'].iloc[-1]))
             return None
@@ -405,7 +407,7 @@ async def main():
             empty_slot = await asyncio.to_thread(db_manager.get_empty_slot)
             if empty_slot:
                 logger.info("=== Buying into Slot %s ===", empty_slot)
-                target_sell_date = (datetime.now() + timedelta(days=28)).strftime("%Y-%m-%d")
+                target_sell_date = (datetime.now(tz=ZoneInfo("Asia/Seoul")) + timedelta(days=28)).strftime("%Y-%m-%d")
                 
                 # Allocation Logic
                 state = await asyncio.to_thread(db_manager.get_portfolio_state)
@@ -426,7 +428,7 @@ async def main():
                         for k in unallocated_slots:
                             if k != empty_slot:
                                 state["slots"][k]["cash_balance"] = allocated_krw        
-                        await asyncio.to_thread(db_manager._save_state, state)
+                        await asyncio.to_thread(db_manager.save_portfolio_state_locked, state)
                 
                 logger.info("Allocated KRW for Slot %s: ₩%s", empty_slot, f"{allocated_krw:,.0f}")
                 
@@ -497,7 +499,6 @@ if __name__ == "__main__":
             try:
                 log_path = get_log_filepath()
                 if log_path:
-                    bot = telegram.Bot(token=TOKEN)
-                    asyncio.run(send_telegram_document_async(log_path, caption=f"❌ ETF Screening CRASH Log", bot=bot))
+                    send_telegram_document_sync(log_path, caption=f"❌ ETF Screening CRASH Log")
             except Exception as inner_e:
                 logger.error("Failed to send crash log via Telegram: %s", inner_e)

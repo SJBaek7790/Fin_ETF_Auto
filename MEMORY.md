@@ -33,6 +33,12 @@ The project runs a 4-Slot Rotation investment system for **Korea-listed ETFs**.
   - Updated all tests to use Korean ETF tickers (069500, 233740)
   - Reset `portfolio_state.json` to fresh empty state
   - Updated README.md, .gitignore, MEMORY.md
+- [x] Code review fixes implementation plan (Issue #26 CI persistence, locking fixes, API resilience, RSI docstrings)
+- [x] KIS API Audit & Alignment (2026-03-30)
+  - Fixed `get_total_portfolio_value()` double-counting cash bug.
+  - Fixed swapped `output1` / `output2` reading in `inquire_balance` consumers.
+  - Explicitly specified `sll_type="01"` for KIS sell orders.
+  - Set default `KIS_MODE` to `prod` in `auth()`.
 
 ## Active Task
 (none)

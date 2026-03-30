@@ -14,6 +14,7 @@ import time
 import logging
 import pandas as pd
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from log_config import setup_logging, get_logger, get_log_filepath
 from common import send_telegram_document_sync, get_market_ohlcv_wrapper, is_kr_market_open_today
@@ -26,8 +27,9 @@ logger = get_logger(__name__)
 def get_price_history(code):
     """Fetches 200 days of close price history for a Korean ETF."""
     try:
-        end_date = (datetime.now() - timedelta(days=1)).strftime("%Y%m%d")
-        start_date = (datetime.now() - timedelta(days=200)).strftime("%Y%m%d")
+        seoul_now = datetime.now(tz=ZoneInfo("Asia/Seoul"))
+        end_date = (seoul_now - timedelta(days=1)).strftime("%Y%m%d")
+        start_date = (seoul_now - timedelta(days=200)).strftime("%Y%m%d")
         df = get_market_ohlcv_wrapper(start_date, end_date, code)
         
         if df is None or df.empty:
@@ -53,7 +55,7 @@ def main():
     
     all_alerts = []
     
-    today_str = datetime.now().strftime("%Y-%m-%d")
+    today_str = datetime.now(tz=ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d")
     
     # 0. Daily Reconciliation Job
     logger.info("--- Running Daily Order Reconciliation Job ---")
@@ -92,7 +94,7 @@ def main():
                         logger.warning("Price data unavailable for %s. Skipping time-stop sell.", t)
                         all_holdings_sold = False
                         continue
-                    curr_price = int(df_hist_temp.iloc[-1]['close'])
+                    curr_price = int(round(float(df_hist_temp.iloc[-1]['close'])))
                     
                     if kis_api.KIS_READY:
                         success = kis_api.execute_kis_sell(t, shares, curr_price)
@@ -155,7 +157,7 @@ def main():
         slot_key = stock_item.get('slot')
             
         logger.info("Checking %s (%s) [Slot %s]...", name, code, slot_key)
-        time.sleep(0.1)
+        time.sleep(0.5)
         
         df = get_price_history(code)
         
@@ -236,7 +238,7 @@ def main():
                          if df_hist_temp is None or df_hist_temp.empty:
                              logger.warning("Price data unavailable for %s. Skipping stop-loss sell.", ticker)
                              continue
-                         curr_price = int(df_hist_temp.iloc[-1]['close'])
+                         curr_price = int(round(float(df_hist_temp.iloc[-1]['close'])))
                          
                          sell_success = kis_api.execute_kis_sell(ticker, shares_to_sell, curr_price)
                          logger.info("Executed stop-loss limit sell for %s (%d shares). Success: %s", ticker, shares_to_sell, sell_success)
@@ -255,7 +257,7 @@ def main():
                 if df_hist is None or df_hist.empty:
                     logger.warning("Price data unavailable for %s. Skipping DB stop-loss update.", ticker)
                     continue
-                execute_price = int(df_hist.iloc[-1]['close'])
+                execute_price = int(round(float(df_hist.iloc[-1]['close'])))
                 
                 # 4. Update DB state
                 db_manager.trigger_stop_loss(slot_key, ticker, reason, execute_price, shares_to_sell)
@@ -266,7 +268,7 @@ def main():
         total_value = kis_api.get_total_portfolio_value()
         
         if total_value > 0.0:
-            today_str = datetime.now().strftime("%Y-%m-%d")
+            today_str = datetime.now(tz=ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d")
             total_value = round(total_value, 0)
             logger.info("Total Portfolio Value: ₩%s", f"{total_value:,.0f}")
             db_manager.save_daily_portfolio_value(today_str, total_value)
