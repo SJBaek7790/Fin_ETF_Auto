@@ -1,9 +1,8 @@
 """
-Shared fixtures for Fin_ETF_Auto unit tests.
+Shared fixtures for Fin_ETF_Auto unit tests (Korean Domestic ETFs).
 
-IMPORTANT: Mocks for unavailable/private modules (config, kis_auth, KIS SDK,
-FinanceDataReader, yfinance, exchange_calendars) are registered at import time
-so that project modules can be imported without the real dependencies.
+Pre-import mocks for unavailable/private modules so project modules can be
+imported without the real dependencies.
 """
 import os
 import sys
@@ -14,16 +13,19 @@ import pandas as pd
 from unittest.mock import MagicMock
 
 # ---------------------------------------------------------------------------
-# Pre-import mocks for modules that are not available in the test environment
+# Pre-import mocks — only modules that kept tests actually import transitively
 # ---------------------------------------------------------------------------
 _MODULES_TO_MOCK = [
-    "config",
     "kis_auth",
-    "order",
-    "inquire_present_balance",
-    "dailyprice",
+    "domestic_stock_functions",
     "FinanceDataReader",
     "yfinance",
+    "exchange_calendars",
+    "requests",
+    "google.genai",
+    "google",
+    "telegram",
+    "telegram.ext",
 ]
 
 for mod_name in _MODULES_TO_MOCK:
@@ -34,11 +36,6 @@ for mod_name in _MODULES_TO_MOCK:
 _PROJECT_ROOT = os.path.join(os.path.dirname(__file__), "..")
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
-
-# Also add .local_deps (for exchange_calendars, etc.)
-_LOCAL_DEPS = os.path.join(_PROJECT_ROOT, ".local_deps")
-if os.path.isdir(_LOCAL_DEPS) and _LOCAL_DEPS not in sys.path:
-    sys.path.insert(0, _LOCAL_DEPS)
 
 
 # ---------------------------------------------------------------------------
@@ -70,7 +67,6 @@ def sample_close_series():
     prices = 100 + np.cumsum(np.random.randn(n) * 0.5)
     prices = np.maximum(prices, 1.0)  # keep positive
     idx = pd.bdate_range(end=pd.Timestamp.now().normalize(), periods=n)
-    # bdate_range may return fewer dates on weekends; align sizes
     if len(idx) < n:
         idx = pd.bdate_range(end=pd.Timestamp.now().normalize() + pd.Timedelta(days=5), periods=n)
     return pd.Series(prices, index=idx[:n], name="close")
@@ -84,27 +80,27 @@ def sample_benchmark_ret(sample_close_series):
 
 @pytest.fixture
 def sample_portfolio_state():
-    """Pre-built 4-slot state with slot 1 invested and slots 2-4 empty."""
+    """Pre-built 4-slot state with slot 1 invested in Korean ETFs and slots 2-4 empty."""
     return {
         "slots": {
             "1": {
                 "status": "invested",
                 "buy_date": "2026-02-20",
                 "target_sell_date": "2026-03-20",
-                "cash_balance": 50.0,
+                "cash_balance": 50000,
                 "holdings": [
                     {
-                        "ticker": "SPY",
-                        "name": "SPDR S&P 500 ETF",
+                        "ticker": "069500",
+                        "name": "KODEX 200",
                         "shares": 10,
-                        "buy_price": 500.0,
+                        "buy_price": 35000,
                         "status": "active",
                     },
                     {
-                        "ticker": "QQQ",
-                        "name": "Invesco QQQ Trust",
+                        "ticker": "233740",
+                        "name": "KODEX 코스닥150",
                         "shares": 5,
-                        "buy_price": 400.0,
+                        "buy_price": 12000,
                         "status": "active",
                     },
                 ],
@@ -114,28 +110,3 @@ def sample_portfolio_state():
             "4": {"status": "empty"},
         }
     }
-
-
-@pytest.fixture
-def sample_df_report():
-    """Small DataFrame mimicking df_final passed to Gemini."""
-    return pd.DataFrame(
-        {
-            "Ticker": ["SPY", "QQQ", "IWM", "GLD", "TLT", "XLF", "XLE"],
-            "ETF Name": [
-                "SPDR S&P 500",
-                "Invesco QQQ",
-                "iShares Russell 2000",
-                "SPDR Gold",
-                "iShares 20+ Year Treasury",
-                "Financial Select Sector",
-                "Energy Select Sector",
-            ],
-            "Avg Trading Value (USD)": [5e9, 4e9, 3e9, 2e9, 1.5e9, 1e9, 9e8],
-            "RET3M": [12.5, 15.3, 8.1, 6.2, -1.0, 10.2, 7.5],
-            "RET3M Score": [80, 100, 50, 35, 0, 65, 45],
-            "EXRSI3M": [55, 60, 48, 42, 70, 52, 46],
-            "EXRSI3M Score": [40, 30, 55, 70, 0, 45, 60],
-            "Composite Score": [60, 65, 52.5, 52.5, 0, 55, 52.5],
-        }
-    )

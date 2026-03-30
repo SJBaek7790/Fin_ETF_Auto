@@ -22,5 +22,13 @@ env/
 keys.json
 KEYS.json
 data/*.json
-data/kis_master/
 .local_deps/
+
+# KIS SDK (cloned in CI via GitHub Actions)
+temp_api/
+
+# Logs
+logs/
+
+# Test cache
+.pytest_cache/

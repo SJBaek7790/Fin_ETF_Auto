@@ -3,6 +3,9 @@ import json
 import logging
 import pandas as pd
 from datetime import datetime
+import fcntl
+import contextlib
+import threading
 
 logger = logging.getLogger(__name__)
 
@@ -10,6 +13,37 @@ DATA_DIR = 'data'
 STATE_FILE = os.path.join(DATA_DIR, 'portfolio_state.json')
 VALUE_HISTORY_FILE = os.path.join(DATA_DIR, 'portfolio_value_history.json')
 TRADE_HISTORY_FILE = os.path.join(DATA_DIR, 'trade_history.json')
+PORTFOLIO_LOCK_FILE = os.path.join(DATA_DIR, 'portfolio.lock')
+
+_lock_local = threading.local()
+
+@contextlib.contextmanager
+def portfolio_lock():
+    os.makedirs(DATA_DIR, exist_ok=True)
+    if not hasattr(_lock_local, 'lock_count'):
+        _lock_local.lock_count = 0
+        _lock_local.lock_fd = None
+
+    if _lock_local.lock_count == 0:
+        _lock_local.lock_fd = open(PORTFOLIO_LOCK_FILE, 'w')
+        fcntl.flock(_lock_local.lock_fd, fcntl.LOCK_EX)
+    
+    _lock_local.lock_count += 1
+    try:
+        yield
+    finally:
+        _lock_local.lock_count -= 1
+        if _lock_local.lock_count == 0:
+            fcntl.flock(_lock_local.lock_fd, fcntl.LOCK_UN)
+            if _lock_local.lock_fd:
+                _lock_local.lock_fd.close()
+            _lock_local.lock_fd = None
+
+def with_portfolio_lock(func):
+    def wrapper(*args, **kwargs):
+        with portfolio_lock():
+            return func(*args, **kwargs)
+    return wrapper
 
 def init_state():
     """Initializes the portfolio state file if it doesn't exist."""
@@ -42,8 +76,10 @@ def _save_state(state):
         with open(temp_file, 'w', encoding='utf-8') as f:
             json.dump(state, f, indent=2, ensure_ascii=False)
         os.replace(temp_file, STATE_FILE)
+        return True
     except Exception as e:
         logger.error("Error saving state: %s", e)
+        return False
 
 def _load_trade_history():
     """Loads the trade history from JSON."""
@@ -63,9 +99,12 @@ def _save_trade_history(history):
         with open(temp_file, 'w', encoding='utf-8') as f:
             json.dump(history, f, indent=2, ensure_ascii=False)
         os.replace(temp_file, TRADE_HISTORY_FILE)
+        return True
     except Exception as e:
         logger.error("Error saving trade history: %s", e)
+        return False
 
+@with_portfolio_lock
 def log_trade(action, ticker, shares, price, slot_key, name="", reason="", status=""):
     """
     Logs a trade (BUY, SELL) to the trade history file.
@@ -102,6 +141,7 @@ def get_empty_slot():
             return key
     return None
 
+@with_portfolio_lock
 def fill_slot(slot_key, target_sell_date, holdings, buy_date=None, initial_cash_balance=0.0):
     """
     Fills an empty slot with selected ETFs.
@@ -138,6 +178,7 @@ def fill_slot(slot_key, target_sell_date, holdings, buy_date=None, initial_cash_
         
     return True
 
+@with_portfolio_lock
 def clear_slot(slot_key, returned_cash=0.0):
     """
     Sells all holdings in a slot and resets it to 'empty'.
@@ -151,6 +192,7 @@ def clear_slot(slot_key, returned_cash=0.0):
     _save_state(state)
     return True
 
+@with_portfolio_lock
 def trigger_stop_loss(slot_key, ticker_to_stop, sell_reason, sell_price, executed_shares, sell_date=None):
     """
     Marks a specific holding in a slot as stopped out (cash) and adds execution proceeds to cash_balance.
@@ -170,7 +212,7 @@ def trigger_stop_loss(slot_key, ticker_to_stop, sell_reason, sell_price, execute
     for holding in slot.get('holdings', []):
         if holding.get('ticker') == str(ticker_to_stop) and holding.get('status') == 'active':
             
-            proceeds = round(float(sell_price) * float(executed_shares), 2)
+            proceeds = round(float(sell_price) * float(executed_shares), 0)
             
             holding['status'] = 'cash'
             holding['sell_reason'] = sell_reason
@@ -178,7 +220,7 @@ def trigger_stop_loss(slot_key, ticker_to_stop, sell_reason, sell_price, execute
             holding['sell_price'] = sell_price
             
             # Add proceeds to cash balance
-            slot['cash_balance'] = round(slot.get('cash_balance', 0.0) + proceeds, 2)
+            slot['cash_balance'] = round(slot.get('cash_balance', 0.0) + proceeds, 0)
             
             # Log the SELL trade
             log_trade(
@@ -199,6 +241,7 @@ def trigger_stop_loss(slot_key, ticker_to_stop, sell_reason, sell_price, execute
         _save_state(state)
     return found
 
+@with_portfolio_lock
 def increment_none_data_days(slot_key, ticker):
     """
     Increments the consecutive missed data day counter for a specific active holding.
@@ -222,6 +265,7 @@ def increment_none_data_days(slot_key, ticker):
 
     return 0
 
+@with_portfolio_lock
 def reset_none_data_days(slot_key, ticker):
     """
     Resets the consecutive missed data day counter to zero for a specific active holding.
@@ -241,6 +285,52 @@ def reset_none_data_days(slot_key, ticker):
                 _save_state(state)
             return
 
+@with_portfolio_lock
+def batch_update_none_data_days(increments, resets):
+    """
+    increments: list of tuples (slot_key, ticker)
+    resets: list of tuples (slot_key, ticker)
+    Returns list of dicts: [{'slot': slot_key, 'ticker': ticker, 'consecutive_none_days': new_count}] for increments.
+    """
+    state = _load_state()
+    if not state:
+        return []
+        
+    changed = False
+    results = []
+    
+    for slot_key, ticker in resets:
+        if slot_key in state.get('slots', {}):
+            slot = state['slots'][slot_key]
+            if slot.get('status') == 'invested':
+                for holding in slot.get('holdings', []):
+                    if holding.get('ticker') == str(ticker) and holding.get('status') == 'active':
+                        if holding.get('consecutive_none_days', 0) > 0:
+                            holding['consecutive_none_days'] = 0
+                            changed = True
+
+    for slot_key, ticker in increments:
+        if slot_key in state.get('slots', {}):
+            slot = state['slots'][slot_key]
+            if slot.get('status') == 'invested':
+                for holding in slot.get('holdings', []):
+                    if holding.get('ticker') == str(ticker) and holding.get('status') == 'active':
+                        current_count = holding.get('consecutive_none_days', 0)
+                        new_count = current_count + 1
+                        holding['consecutive_none_days'] = new_count
+                        results.append({
+                            'slot': slot_key,
+                            'ticker': ticker,
+                            'consecutive_none_days': new_count
+                        })
+                        changed = True
+
+    if changed:
+        _save_state(state)
+        
+    return results
+
+@with_portfolio_lock
 def reconcile_with_kis_holdings(kis_holdings):
     """
     Compares the expected active holdings in portfolio_state.json with the actual
@@ -271,12 +361,31 @@ def reconcile_with_kis_holdings(kis_holdings):
                 if expected_shares > actual_shares:
                     shortfall = expected_shares - actual_shares
                     buy_price = float(holding.get('buy_price', 0.0))
-                    refund_amount = round(shortfall * buy_price, 2)
+                    refund_amount = round(shortfall * buy_price, 0)
                     
+                    if (shortfall / expected_shares) >= 0.5:
+                        # > 50% drop in shares - possible corporate action/reverse split
+                        holding['status'] = 'Corporate Action Suspected'
+                        msg = f"🚨 EMERGENCY: Reconciliation: CRITICAL DISCREPANCY for {ticker} in Slot {slot_key}. Expected {expected_shares}, found {actual_shares}. Suspected Corporate Action/Reverse Split. Holding locked. Manual intervention required!"
+                        alerts.append(msg)
+                        
+                        log_trade(
+                            action="RECONCILE_SUSPEND",
+                            ticker=ticker,
+                            shares=shortfall,
+                            price=buy_price,
+                            slot_key=slot_key,
+                            name=holding.get('name', ''),
+                            reason="Corporate Action Suspected (>50% share drop)",
+                            status="suspended"
+                        )
+                        state_changed = True
+                        continue
+
                     if actual_shares == 0.0:
                         # The entire order failed to execute or was completely mismatched
                         holding['status'] = 'failed_buy'
-                        msg = f"Reconciliation: Buy order for {ticker} in Slot {slot_key} failed to execute. Removed {expected_shares} outstanding shares and refunded ${refund_amount:,.2f}."
+                        msg = f"Reconciliation: Buy order for {ticker} in Slot {slot_key} failed to execute. Removed {expected_shares} outstanding shares and refunded ₩{refund_amount:,.0f}."
                         alerts.append(msg)
                         
                         log_trade(
@@ -292,7 +401,7 @@ def reconcile_with_kis_holdings(kis_holdings):
                     else:
                         # Partial fill or partial missing shares
                         holding['shares'] = actual_shares
-                        msg = f"Reconciliation: Discrepancy for {ticker} in Slot {slot_key}. Expected {expected_shares}, found {actual_shares}. Refunded partial unfilled amount of ${refund_amount:,.2f}."
+                        msg = f"Reconciliation: Discrepancy for {ticker} in Slot {slot_key}. Expected {expected_shares}, found {actual_shares}. Refunded partial unfilled amount of ₩{refund_amount:,.0f}."
                         alerts.append(msg)
                         
                         log_trade(
@@ -308,14 +417,34 @@ def reconcile_with_kis_holdings(kis_holdings):
                         
                     # Refund the cash balance to the slot
                     current_cash = float(slot_data.get('cash_balance', 0.0))
-                    slot_data['cash_balance'] = round(current_cash + refund_amount, 2)
+                    slot_data['cash_balance'] = round(current_cash + refund_amount, 0)
+                    state_changed = True
+                    
+                elif actual_shares > expected_shares:
+                    overage = actual_shares - expected_shares
+                    buy_price = float(holding.get('buy_price', 0.0))
+                    holding['shares'] = actual_shares
+                    
+                    msg = f"⚠️ WARNING: Reconciliation: Discrepancy for {ticker} in Slot {slot_key}. Expected {expected_shares}, found {actual_shares}. DB undercounted by {overage}. Adjusted DB actively upward."
+                    alerts.append(msg)
+                    
+                    log_trade(
+                        action="RECONCILE_UPWARD",
+                        ticker=ticker,
+                        shares=overage,
+                        price=buy_price,
+                        slot_key=slot_key,
+                        name=holding.get('name', ''),
+                        reason=f"DB undercounted ({expected_shares} -> {actual_shares})",
+                        status="active"
+                    )
                     state_changed = True
 
             # Clean up the slot if it has no active holdings at all after reconciliation
             still_active = [h for h in slot_data.get('holdings', []) if h.get('status') == 'active']
             if not still_active and state_changed:
                 slot_data['status'] = 'empty'
-                msg = f"Reconciliation: Slot {slot_key} became empty after failed limits. Reverted to empty status with cash balance ${slot_data['cash_balance']:,.2f}."
+                msg = f"Reconciliation: Slot {slot_key} became empty after failed limits. Reverted to empty status with cash balance ₩{slot_data['cash_balance']:,.0f}."
                 alerts.append(msg)
 
     if state_changed:
@@ -369,39 +498,32 @@ def get_slots_to_sell(current_date=None):
     return slots_to_sell
 
 def load_value_history():
-    """Loads the daily portfolio value history."""
+    """Loads the daily portfolio value history as a dictionary."""
     if not os.path.exists(VALUE_HISTORY_FILE):
-        return []
+        return {}
     try:
         with open(VALUE_HISTORY_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
+            data = json.load(f)
+            # Migration hook: if data is list of dicts [{"date": "...", "total_value": X}], convert to dict
+            if isinstance(data, list):
+                new_data = {item['date']: item['total_value'] for item in data}
+                return new_data
+            return data
     except Exception as e:
         logger.error("Error loading value history: %s", e)
-        return []
+        return {}
 
 def save_daily_portfolio_value(date_str, total_value):
-    """Appends the total portfolio value for the given date."""
-    history = load_value_history()
+    """Saves the total portfolio value for the given date in O(1) time."""
+    history_dict = load_value_history()
     
-    # Update if date exists, else append
-    updated = False
-    for entry in history:
-        if entry.get("date") == date_str:
-            entry["total_value"] = total_value
-            updated = True
-            break
-            
-    if not updated:
-        history.append({"date": date_str, "total_value": total_value})
-        
-    # Sort by date
-    history = sorted(history, key=lambda x: x["date"])
+    history_dict[date_str] = total_value
     
     try:
         os.makedirs(DATA_DIR, exist_ok=True)
         temp_file = VALUE_HISTORY_FILE + ".tmp"
         with open(temp_file, 'w', encoding='utf-8') as f:
-            json.dump(history, f, indent=2, ensure_ascii=False)
+            json.dump(history_dict, f, indent=2, ensure_ascii=False)
         os.replace(temp_file, VALUE_HISTORY_FILE)
     except Exception as e:
         logger.error("Error saving value history: %s", e)
@@ -411,11 +533,11 @@ def calculate_portfolio_metrics():
     Calculates Total Return, CAGR, peak value, MDD, and current drawdown
     from the daily value history.
     """
-    history = load_value_history()
-    if not history:
+    history_dict = load_value_history()
+    if not history_dict:
         return None
         
-    df = pd.DataFrame(history)
+    df = pd.DataFrame(list(history_dict.items()), columns=['date', 'total_value'])
     df['date'] = pd.to_datetime(df['date'])
     df = df.sort_values('date').reset_index(drop=True)
     

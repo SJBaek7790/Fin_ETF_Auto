@@ -37,29 +37,29 @@ class TestFillSlot:
     def test_fill_slot_sets_invested(self, tmp_data_dir):
         db_manager.init_state()
         holdings = [
-            {"ticker": "SPY", "name": "SPDR S&P 500", "shares": 5, "buy_price": 500.0, "status": "active"}
+            {"ticker": "069500", "name": "KODEX 200", "shares": 5, "buy_price": 35000, "status": "active"}
         ]
-        result = db_manager.fill_slot("1", "2026-04-20", holdings, buy_date="2026-03-22", initial_cash_balance=100.0)
+        result = db_manager.fill_slot("1", "2026-04-20", holdings, buy_date="2026-03-22", initial_cash_balance=100000)
         assert result is True
 
         state = db_manager.get_portfolio_state()
         slot = state["slots"]["1"]
         assert slot["status"] == "invested"
         assert slot["target_sell_date"] == "2026-04-20"
-        assert slot["cash_balance"] == 100.0
+        assert slot["cash_balance"] == 100000
         assert len(slot["holdings"]) == 1
-        assert slot["holdings"][0]["ticker"] == "SPY"
+        assert slot["holdings"][0]["ticker"] == "069500"
 
     def test_fill_slot_logs_trade(self, tmp_data_dir):
         db_manager.init_state()
         holdings = [
-            {"ticker": "QQQ", "name": "Invesco QQQ", "shares": 3, "buy_price": 400.0, "status": "active"}
+            {"ticker": "233740", "name": "KODEX 코스닥150", "shares": 3, "buy_price": 12000, "status": "active"}
         ]
         db_manager.fill_slot("2", "2026-04-20", holdings)
         history = db_manager._load_trade_history()
         assert len(history) == 1
         assert history[0]["action"] == "BUY"
-        assert history[0]["ticker"] == "QQQ"
+        assert history[0]["ticker"] == "233740"
 
     def test_fill_invalid_slot_returns_false(self, tmp_data_dir):
         db_manager.init_state()
@@ -87,31 +87,31 @@ class TestTriggerStopLoss:
         db_manager._save_state(sample_portfolio_state)
         result = db_manager.trigger_stop_loss(
             slot_key="1",
-            ticker_to_stop="SPY",
+            ticker_to_stop="069500",
             sell_reason="MA broken",
-            sell_price=480.0,
+            sell_price=34000,
             executed_shares=10,
             sell_date="2026-03-22",
         )
         assert result is True
 
         state = db_manager.get_portfolio_state()
-        spy_holding = state["slots"]["1"]["holdings"][0]
-        assert spy_holding["status"] == "cash"
-        assert spy_holding["sell_reason"] == "MA broken"
-        assert spy_holding["sell_price"] == 480.0
+        kodex_holding = state["slots"]["1"]["holdings"][0]
+        assert kodex_holding["status"] == "cash"
+        assert kodex_holding["sell_reason"] == "MA broken"
+        assert kodex_holding["sell_price"] == 34000
 
-        # Proceeds = 480 * 10 = 4800, initial cash_balance = 50
-        assert state["slots"]["1"]["cash_balance"] == 4850.0
+        # Proceeds = 34000 * 10 = 340000, initial cash_balance = 50000
+        assert state["slots"]["1"]["cash_balance"] == 390000
 
     def test_returns_false_for_unknown_ticker(self, tmp_data_dir, sample_portfolio_state):
         db_manager._save_state(sample_portfolio_state)
-        result = db_manager.trigger_stop_loss("1", "FAKE", "test", 100.0, 1)
+        result = db_manager.trigger_stop_loss("1", "FAKE", "test", 100, 1)
         assert result is False
 
     def test_returns_false_for_empty_slot(self, tmp_data_dir):
         db_manager.init_state()
-        result = db_manager.trigger_stop_loss("1", "SPY", "test", 100.0, 1)
+        result = db_manager.trigger_stop_loss("1", "069500", "test", 100, 1)
         assert result is False
 
 
@@ -132,31 +132,42 @@ class TestGetSlotsToSell:
 class TestReconcileWithKISHoldings:
     def test_adjusts_shortfall(self, tmp_data_dir, sample_portfolio_state):
         db_manager._save_state(sample_portfolio_state)
-        # KIS says only 7 shares of SPY instead of 10
-        kis_holdings = [{"ticker": "SPY", "shares": 7}, {"ticker": "QQQ", "shares": 5}]
+        # KIS says only 7 shares of KODEX 200 instead of 10
+        kis_holdings = [{"ticker": "069500", "shares": 7}, {"ticker": "233740", "shares": 5}]
         alerts = db_manager.reconcile_with_kis_holdings(kis_holdings)
 
         assert len(alerts) > 0
         state = db_manager.get_portfolio_state()
-        spy_h = [h for h in state["slots"]["1"]["holdings"] if h["ticker"] == "SPY"][0]
-        assert spy_h["shares"] == 7  # adjusted down
+        kodex_h = [h for h in state["slots"]["1"]["holdings"] if h["ticker"] == "069500"][0]
+        assert kodex_h["shares"] == 7  # adjusted down
 
     def test_no_alerts_when_matching(self, tmp_data_dir, sample_portfolio_state):
         db_manager._save_state(sample_portfolio_state)
-        kis_holdings = [{"ticker": "SPY", "shares": 10}, {"ticker": "QQQ", "shares": 5}]
+        kis_holdings = [{"ticker": "069500", "shares": 10}, {"ticker": "233740", "shares": 5}]
         alerts = db_manager.reconcile_with_kis_holdings(kis_holdings)
         assert alerts == []
 
-    def test_zero_actual_marks_failed_buy(self, tmp_data_dir, sample_portfolio_state):
+    def test_zero_actual_marks_corporate_action(self, tmp_data_dir, sample_portfolio_state):
         db_manager._save_state(sample_portfolio_state)
-        # SPY shows 0 actual shares
-        kis_holdings = [{"ticker": "QQQ", "shares": 5}]
+        # 069500 shows 0 actual shares — 100% shortfall triggers corporate action (≥50% threshold)
+        kis_holdings = [{"ticker": "233740", "shares": 5}]
         alerts = db_manager.reconcile_with_kis_holdings(kis_holdings)
         assert len(alerts) > 0
 
         state = db_manager.get_portfolio_state()
-        spy_h = [h for h in state["slots"]["1"]["holdings"] if h["ticker"] == "SPY"][0]
-        assert spy_h["status"] == "failed_buy"
+        kodex_h = [h for h in state["slots"]["1"]["holdings"] if h["ticker"] == "069500"][0]
+        assert kodex_h["status"] == "Corporate Action Suspected"
+
+    def test_adjusts_overage(self, tmp_data_dir, sample_portfolio_state):
+        db_manager._save_state(sample_portfolio_state)
+        # KIS says 12 shares of KODEX 200 instead of 10
+        kis_holdings = [{"ticker": "069500", "shares": 12}, {"ticker": "233740", "shares": 5}]
+        alerts = db_manager.reconcile_with_kis_holdings(kis_holdings)
+
+        assert len(alerts) > 0
+        state = db_manager.get_portfolio_state()
+        kodex_h = [h for h in state["slots"]["1"]["holdings"] if h["ticker"] == "069500"][0]
+        assert kodex_h["shares"] == 12  # adjusted up
 
 
 class TestPortfolioValueHistory:
@@ -164,14 +175,14 @@ class TestPortfolioValueHistory:
         db_manager.save_daily_portfolio_value("2026-03-22", 10000.0)
         history = db_manager.load_value_history()
         assert len(history) == 1
-        assert history[0]["total_value"] == 10000.0
+        assert history["2026-03-22"] == 10000.0
 
     def test_update_existing_date(self, tmp_data_dir):
         db_manager.save_daily_portfolio_value("2026-03-22", 10000.0)
         db_manager.save_daily_portfolio_value("2026-03-22", 10500.0)
         history = db_manager.load_value_history()
         assert len(history) == 1
-        assert history[0]["total_value"] == 10500.0
+        assert history["2026-03-22"] == 10500.0
 
 
 class TestCalculatePortfolioMetrics:

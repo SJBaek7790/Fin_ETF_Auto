@@ -1,3 +1,12 @@
+"""
+Shared utilities for Fin_ETF_Auto (Korean Domestic ETFs).
+
+Provides:
+- Telegram messaging helpers (sync + async)
+- FinanceDataReader wrappers for Korean ETF data (with yfinance fallback)
+- KRX market calendar check via exchange_calendars
+"""
+
 import os
 import sys
 import json
@@ -7,6 +16,7 @@ import logging
 _LOCAL_DEPS = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.local_deps')
 if os.path.isdir(_LOCAL_DEPS) and _LOCAL_DEPS not in sys.path:
     sys.path.insert(0, _LOCAL_DEPS)
+
 import requests
 import telegram
 import asyncio
@@ -48,7 +58,6 @@ async def send_telegram_message_async(message, bot=None):
     if bot:
         await bot.send_message(chat_id=CHAT_ID, text=message, parse_mode='HTML')
     else:
-        # Fallback to creating a bot instance
         local_bot = telegram.Bot(token=TELEGRAM_TOKEN)
         await local_bot.send_message(chat_id=CHAT_ID, text=message, parse_mode='HTML')
 
@@ -77,22 +86,23 @@ def send_telegram_document_sync(file_path, caption=None):
     except Exception as e:
         logger.error("Failed to send Telegram document (sync): %s", e)
 
-# --- FinanceDataReader WRAPPERS ---
+# --- FinanceDataReader WRAPPERS (Korean ETFs) ---
 
 _ETF_LISTING_CACHE = None
 
 def _get_etf_listing():
+    """Fetches the Korean ETF listing via FinanceDataReader."""
     global _ETF_LISTING_CACHE
-    if _ETF_LISTING_CACHE is None:
+    if _ETF_LISTING_CACHE is None or _ETF_LISTING_CACHE.empty:
         try:
-            _ETF_LISTING_CACHE = fdr.StockListing('ETF/US')
+            _ETF_LISTING_CACHE = fdr.StockListing('ETF/KR')
         except Exception as e:
-            logger.error("Error fetching ETF listings for US via fdr: %s", e)
+            logger.error("Error fetching ETF listings for KR via fdr: %s", e)
             _ETF_LISTING_CACHE = pd.DataFrame()
     return _ETF_LISTING_CACHE
 
 def get_market_ohlcv_wrapper(start_date, end_date, ticker):
-    """Wrapper using FinanceDataReader with yfinance fallback for US ETFs"""
+    """Wrapper using FinanceDataReader with yfinance fallback for Korean ETFs."""
     try:
         start_dt = datetime.strptime(start_date, '%Y%m%d').strftime('%Y-%m-%d')
         end_dt = datetime.strptime(end_date, '%Y%m%d').strftime('%Y-%m-%d')
@@ -102,15 +112,15 @@ def get_market_ohlcv_wrapper(start_date, end_date, ticker):
             logger.warning("Empty data from fdr for %s, falling back to yfinance", ticker)
             return fetch_ohlcv_yfinance(start_date, end_date, ticker)
             
-        # Reconstruct DataFrame with pykrx compatible columns
+        # Reconstruct DataFrame with english compatible columns
         df_out = pd.DataFrame({
-            '시가': df['Open'],
-            '고가': df['High'],
-            '저가': df['Low'],
-            '종가': df['Close'],
-            '거래량': df['Volume'],
-            '거래대금': df['Close'] * df['Volume'],
-            '등락률': df['Change'] * 100 if 'Change' in df.columns else df['Close'].pct_change() * 100
+            'open': df['Open'],
+            'high': df['High'],
+            'low': df['Low'],
+            'close': df['Close'],
+            'volume': df['Volume'],
+            'value': df['Close'] * df['Volume'],
+            'change': df['Change'] * 100 if 'Change' in df.columns else df['Close'].pct_change() * 100
         })
         return df_out
     except Exception as e:
@@ -118,11 +128,11 @@ def get_market_ohlcv_wrapper(start_date, end_date, ticker):
         return fetch_ohlcv_yfinance(start_date, end_date, ticker)
 
 def get_etf_ohlcv_by_date_wrapper(start_date, end_date, ticker):
-    """Wrapper using FinanceDataReader with yfinance fallback"""
+    """Wrapper using FinanceDataReader with yfinance fallback."""
     return get_market_ohlcv_wrapper(start_date, end_date, ticker)
 
 def get_etf_ticker_list_wrapper(date=None):
-    """Wrapper using FinanceDataReader"""
+    """Returns a list of Korean ETF ticker codes."""
     try:
         df_etf = _get_etf_listing()
         if not df_etf.empty and 'Symbol' in df_etf.columns:
@@ -133,7 +143,7 @@ def get_etf_ticker_list_wrapper(date=None):
         return []
 
 def get_etf_ticker_name_wrapper(ticker):
-    """Wrapper using FinanceDataReader"""
+    """Returns the name of a Korean ETF given its ticker code."""
     try:
         df_etf = _get_etf_listing()
         if not df_etf.empty and 'Symbol' in df_etf.columns and 'Name' in df_etf.columns:
@@ -146,12 +156,18 @@ def get_etf_ticker_name_wrapper(ticker):
         return str(ticker)
 
 def fetch_ohlcv_yfinance(start_date_str, end_date_str, ticker):
-    """Fallback method to fetch US historical data using yfinance."""
+    """Fallback method to fetch Korean ETF data using yfinance.
+    
+    Appends '.KS' suffix for KRX-listed tickers if not already present.
+    """
     try:
         start_dt = datetime.strptime(start_date_str, '%Y%m%d').strftime('%Y-%m-%d')
         end_dt = datetime.strptime(end_date_str, '%Y%m%d').strftime('%Y-%m-%d')
         
-        df = yf.download(ticker, start=start_dt, end=end_dt, progress=False)
+        # Append .KS suffix for Korean stocks if not already present
+        yf_ticker = ticker if ('.' in str(ticker)) else f"{ticker}.KS"
+        
+        df = yf.download(yf_ticker, start=start_dt, end=end_dt, progress=False)
         
         if df is None or df.empty:
             return None
@@ -170,15 +186,15 @@ def fetch_ohlcv_yfinance(start_date_str, end_date_str, ticker):
             high_series = df['High']
             low_series = df['Low']
             
-        # Reconstruct DataFrame with pykrx compatible columns
+        # Reconstruct DataFrame with english compatible columns
         df_out = pd.DataFrame({
-            '시가': open_series,
-            '고가': high_series,
-            '저가': low_series,
-            '종가': close_series,
-            '거래량': volume_series,
-            '거래대금': close_series * volume_series,
-            '등락률': close_series.pct_change() * 100
+            'open': open_series,
+            'high': high_series,
+            'low': low_series,
+            'close': close_series,
+            'volume': volume_series,
+            'value': close_series * volume_series,
+            'change': close_series.pct_change() * 100
         })
         return df_out
     except Exception as e:
@@ -186,16 +202,15 @@ def fetch_ohlcv_yfinance(start_date_str, end_date_str, ticker):
         return None
 
 
-# --- US MARKET CALENDAR ---
+# --- KRX MARKET CALENDAR ---
 
-def is_us_market_open_today():
-    """Returns True if today is a US market trading day (XNYS = NYSE).
+def is_kr_market_open_today():
+    """Returns True if today is a KRX (Korea Exchange) trading day.
     
-    Note: Uses the current US Eastern date to check against the NYSE calendar.
+    Uses the current Asia/Seoul date to check against the XKRX calendar.
     exchange_calendars requires timezone-naive timestamps.
     """
-    nyse = xcals.get_calendar("XNYS")
-    # Get today's date in US Eastern time, then strip timezone for exchange_calendars
-    us_eastern_now = pd.Timestamp.now(tz="America/New_York")
-    today = pd.Timestamp(us_eastern_now.date())  # tz-naive date
-    return nyse.is_session(today)
+    krx = xcals.get_calendar("XKRX")
+    seoul_now = pd.Timestamp.now(tz="Asia/Seoul")
+    today = pd.Timestamp(seoul_now.date())  # tz-naive date
+    return krx.is_session(today)

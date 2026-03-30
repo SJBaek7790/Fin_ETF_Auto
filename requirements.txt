@@ -1,0 +1,9 @@
+pandas
+numpy
+FinanceDataReader
+yfinance
+python-telegram-bot
+requests
+google-genai
+exchange_calendars
+python-dotenv

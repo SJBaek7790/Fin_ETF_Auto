@@ -1,3 +1,13 @@
+"""
+ETF Screening — Korean Domestic ETFs
+
+Screens Korea-listed ETFs using a momentum + excess RSI composite scoring system,
+then uses Gemini AI to select a final elite portfolio of 3 ETFs.
+Executes buy orders via the KIS domestic stock API.
+
+Run schedule: Once weekly (e.g. every Thursday during KRX market hours).
+"""
+
 import os
 import time
 import json
@@ -8,7 +18,6 @@ import asyncio
 import telegram
 import warnings
 import sys
-import config
 from datetime import datetime, timedelta
 from html import escape
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -19,7 +28,7 @@ from log_config import setup_logging, get_logger, get_log_filepath
 from common import (
     send_telegram_document_async,
     get_etf_ticker_list_wrapper, get_etf_ohlcv_by_date_wrapper, get_etf_ticker_name_wrapper,
-    is_us_market_open_today
+    is_kr_market_open_today
 )
 
 import db_manager
@@ -34,9 +43,20 @@ TOKEN = os.getenv('TELEGRAM_TOKEN')
 CHAT_ID = os.getenv('CHAT_ID')
 
 # Basic Settings
-EXCLUDE_KEYWORDS = ['2X', '3X', '-1X', '-2X', '-3X', 'Ultra', 'Bull', 'Bear', 'Inverse', 'Short', 'VIX', 'ETN', 'Target', 'Duration']
-MIN_AVG_TRADING = 10000000
+EXCLUDE_KEYWORDS = [
+    '2X', '3X', '-1X', '-2X', '-3X',
+    'Ultra', 'Bull', 'Bear', 'Inverse', 'Short', 'VIX', 'ETN',
+    'Target', 'Duration',
+    # Korean-specific
+    '레버리지', '인버스', '곱버스', '선물', '2배', '3배',
+    '숏', '베어', '불',
+]
+MIN_AVG_TRADING_KRW = 1_000_000_000  # ₩1B KRW minimum daily trading value
+STARTING_CAPITAL_KRW = 10_000_000     # ₩10M KRW total capital
 EPSILON = 1e-8
+
+# Benchmark: KODEX 200 (069500) — Korea's equivalent of SPY
+BENCHMARK_TICKER = "069500"
 
 # Dates
 end_date = datetime.now()
@@ -57,12 +77,9 @@ def calculate_rsi(series, period=14):
     """Calculates RSI on a pandas Series."""
     delta = series
     
-    # Separate gains and losses
     gain = delta.where(delta > 0, 0)
     loss = -delta.where(delta < 0, 0)
 
-    # Calculate EMA (Wilder's Smoothing)
-    # com = period - 1 corresponds to Wilder's alpha = 1/period
     avg_gain = gain.ewm(com=period-1, min_periods=period).mean()
     avg_loss = loss.ewm(com=period-1, min_periods=period).mean()
 
@@ -71,7 +88,7 @@ def calculate_rsi(series, period=14):
     return rsi
 
 def fetch_etf_data(ticker):
-    """Fetches generic ETF data (OHLCV, Name, AUM approximation)."""
+    """Fetches generic ETF data (OHLCV, Name, trading value approximation)."""
     try:
         etf_name = get_etf_ticker_name_wrapper(ticker)
         df_ohlcv = get_etf_ohlcv_by_date_wrapper(start_str, end_str, ticker)
@@ -80,20 +97,19 @@ def fetch_etf_data(ticker):
             return None
         
         df_ohlcv = df_ohlcv.sort_index()
-        # We need enough data for 60-day RSI + some lookback. 120 is safe.
         if len(df_ohlcv) < 120:
              return None
 
-        close_prices = df_ohlcv['종가'].astype(float)
-        trading_values = df_ohlcv['거래대금'].astype(float)
+        close_prices = df_ohlcv['close'].astype(float)
+        trading_values = df_ohlcv['value'].astype(float)
 
-        avg_trading_usd = trading_values.iloc[-20:].mean()
+        avg_trading_krw = trading_values.iloc[-20:].mean()
 
         return {
             'ticker': ticker,
             'name': etf_name,
             'close': close_prices,
-            'avg_trading_usd': avg_trading_usd
+            'avg_trading_krw': avg_trading_krw
         }
     except Exception as e:
         return None
@@ -102,18 +118,13 @@ def calculate_metrics(data, benchmark_ret):
     """Calculates RET3M and EXRSI3M."""
     close = data['close']
     
-    # 1. RET3M: ((price_today - price_3m_ago) / price_3m_ago) * 100
-    # 3 months approx 60 trading days
     if len(close) < 60:
         return None
         
     ret_3m = ((close.iloc[-1] - close.iloc[-60]) / close.iloc[-60]) * 100
     
-    # 2. EXRSI3M: RSI(60) of Excess Returns
-    # Align ETF returns with Benchmark returns
     etf_ret = close.pct_change()
     
-    # Combine to align dates
     df_aligned = pd.DataFrame({
         'ETF': etf_ret,
         'BM': benchmark_ret
@@ -124,7 +135,6 @@ def calculate_metrics(data, benchmark_ret):
 
     df_aligned['Excess'] = df_aligned['ETF'] - df_aligned['BM']
     
-    # Calculate RSI on Excess Returns with period 60
     rsi_series = calculate_rsi(df_aligned['Excess'], period=60)
     ex_rsi_3m = rsi_series.iloc[-1]
     
@@ -149,7 +159,7 @@ def process_single_etf(ticker, benchmark_ret):
         if any(keyword.upper() in name_upper for keyword in EXCLUDE_KEYWORDS):
             stats['filter'] = 'excluded_keywords'; return None, stats
 
-        if data['avg_trading_usd'] < MIN_AVG_TRADING:
+        if data['avg_trading_krw'] < MIN_AVG_TRADING_KRW:
             stats['filter'] = 'low_trading'; return None, stats
         
         close = data['close']
@@ -161,7 +171,6 @@ def process_single_etf(ticker, benchmark_ret):
         if current_price < sma_120 or current_price < price_3m_ago:
              stats['filter'] = 'failed_momentum'; return None, stats
         
-        # Calculate New Metrics
         metrics = calculate_metrics(data, benchmark_ret)
         if not metrics:
              stats['filter'] = 'missing_metrics'; return None, stats
@@ -169,7 +178,7 @@ def process_single_etf(ticker, benchmark_ret):
         stats['filter'] = 'passed'
         result = {
             'Ticker': ticker, 'ETF Name': name, 
-            'Avg Trading Value (USD)': round(data['avg_trading_usd'], 1),
+            'Avg Trading Value (KRW)': round(data['avg_trading_krw'], 0),
             **metrics
         }
         return result, stats
@@ -190,27 +199,27 @@ def select_etfs_with_gemini(df_report):
         return []
     
     if not GEMINI_API_KEY:
-        logger.warning("GEMINI_API_KEY not set. Falling back to top 7.")
-        return _fallback_top7(df_report)
+        logger.warning("GEMINI_API_KEY not set. Falling back to top 3.")
+        return _fallback_top3(df_report)
 
     report_json = df_report.to_json(orient='records', force_ascii=False, indent=2)
 
     prompt = f"""# Role
-You are a Senior Quant Portfolio Manager at a large Wall Street hedge fund. You are highly skilled in global macro trends, GICS sector rotation strategies, and have exceptional ability to filter out data noise to capture core trends.
+You are a Senior Quant Portfolio Manager specializing in the Korean equity market. You are highly skilled in Korean macro trends, GICS sector rotation strategies for Korea-listed ETFs, and have exceptional ability to filter out data noise to capture core trends.
 
 # Task
-Analyze the provided momentum top 50 ETF data and select the **'elite universe of 5~10 ETFs'**.
+Analyze the provided momentum top 50 Korea-listed ETF data and select the **'elite universe of exactly 3 ETFs'**.
 
 # Selection Logic & Constraints (Strict Adherence)
-1. **Exclude Leverage/Inverse:** Unconditionally exclude funds with keywords or structures like '2x', '3x', 'Ultra', 'Bull', 'Bear', 'Inverse', 'Short', 'VIX', 'ETN', 'Target', or 'Duration'.
-2. **Representation & Deduplication:** If ETFs tracking the same GICS sector or US macro theme are duplicated, keep only the 1 with the highest 'Avg Trading Value (USD)' and market representation, and exclude the rest.
+1. **Exclude Leverage/Inverse:** Unconditionally exclude funds with keywords like '2X', '3X', 'Ultra', 'Bull', 'Bear', 'Inverse', 'Short', 'VIX', 'ETN', '레버리지', '인버스', '곱버스', '선물'.
+2. **Representation & Deduplication:** If ETFs tracking the same GICS sector or Korean macro theme are duplicated, keep only the 1 with the highest 'Avg Trading Value (KRW)' and market representation, and exclude the rest.
 3. **Liquidity & Credit Risk Filtering:** Exclude products with significantly low trading volume, or those with issuer credit risk like ETNs.
-4. **Portfolio Diversity:** Ensure the final list is not 100% concentrated in a single theme. Distribute across 2~3 leading sectors/themes (GICS sectors or US macro trends). (However, overweighting is permitted if there is an overwhelmingly clear dominant market theme).
+4. **Portfolio Diversity:** Ensure the final 3 ETFs are not 100% concentrated in a single theme. Distribute across 2~3 leading sectors/themes (GICS sectors or Korean macro trends). (However, overweighting is permitted if there is an overwhelmingly clear dominant market theme).
 
 # Macro & News Validation
-Using Google Search, review the major news and macroeconomic environment from the past 1 week to 1 month for the underlying assets or core sectors of the shortlisted ETFs.
-1. Identify Catalysts: Is the current high return (RET3M) justified by fundamental improvements in the real economy, strong policy support, or robust structural themes? (Exclude news solely reporting on simple price appreciation.)
-2. Assess Trend Reversal Risks: Are there emerging macroeconomic headwinds (e.g., sudden interest rate shifts, regulatory risks, geopolitical conflicts) that could abruptly break the current momentum?
+Using Google Search, review the major news and macroeconomic environment from the past 1 week to 1 month for the underlying assets or core sectors of the shortlisted ETFs. Focus on Korea, Asia, and global macro factors affecting the Korean market.
+1. Identify Catalysts: Is the current high return (RET3M) justified by fundamental improvements, strong policy support, or robust structural themes?
+2. Assess Trend Reversal Risks: Are there emerging headwinds (e.g., BOK rate decisions, KRW weakness, geopolitical risks, China slowdown) that could break the momentum?
 
 # Input Data
 {report_json}
@@ -230,13 +239,8 @@ The result MUST be output ONLY in the JSON array format below. Do NOT include an
                 model='gemini-3.1-pro-preview',
                 contents=prompt,
                 config=types.GenerateContentConfig(
-                    # 1. Enable Google Search as a tool
                     tools=[types.Tool(google_search=types.GoogleSearch())],
-                    
-                    # 2. Set the thinking level to HIGH
                     thinking_config=types.ThinkingConfig(thinking_level=types.ThinkingLevel.HIGH),
-
-                    # 3. JSON Output
                     response_mime_type="application/json",
                     response_schema=types.Schema(
                         type=types.Type.ARRAY,
@@ -245,7 +249,7 @@ The result MUST be output ONLY in the JSON array format below. Do NOT include an
                             properties={
                                 "Ticker": types.Schema(
                                     type=types.Type.STRING,
-                                    description="Ticker of ETF (ex: SLV)"
+                                    description="6-digit KRX ticker code (ex: 069500)"
                                 ),
                                 "ETF Name": types.Schema(
                                     type=types.Type.STRING,
@@ -261,24 +265,23 @@ The result MUST be output ONLY in the JSON array format below. Do NOT include an
                     )
                 )
             )
-            break  # Success — exit retry loop
+            break
         except Exception as e:
             logger.warning("Gemini API attempt %d/%d failed: %s", attempt, MAX_RETRIES, e)
             if attempt == MAX_RETRIES:
-                logger.error("All %d Gemini API attempts failed. Falling back to top 7.", MAX_RETRIES)
-                return _fallback_top7(df_report)
-            time.sleep(2 ** attempt)  # Exponential backoff: 2s, 4s
+                logger.error("All %d Gemini API attempts failed. Falling back to top 3.", MAX_RETRIES)
+                return _fallback_top3(df_report)
+            time.sleep(2 ** attempt)
 
-    # --- Parse and validate the successful response ---
+    # --- Parse and validate ---
     try:
         cleaned_text = response.text.strip().removeprefix('```json').removesuffix('```').strip()
         selected = json.loads(cleaned_text)
     except Exception as e:
-        logger.error("Gemini response parsing error: %s. Falling back to top 7.", e)
-        return _fallback_top7(df_report)
+        logger.error("Gemini response parsing error: %s. Falling back to top 3.", e)
+        return _fallback_top3(df_report)
 
     if isinstance(selected, list):
-        # Validate against pre-screened universe to prevent LLM hallucinations
         valid_tickers = set(df_report['Ticker'].astype(str))
         validated_selected = []
         
@@ -293,38 +296,32 @@ The result MUST be output ONLY in the JSON array format below. Do NOT include an
 
         if not selected:
             logger.warning("Gemini returned no valid ETFs after filtering hallucinations. Falling back.")
-            return _fallback_top7(df_report)
+            return _fallback_top3(df_report)
 
         logger.info("Gemini selected ETFs successfully.")
         for s in selected:
             logger.info("  - %s %s: %s", s['Ticker'], s['ETF Name'], s.get('Reason', 'N/A'))
         return selected
     else:
-        logger.warning("Gemini returned unexpected format (len=%s). Falling back.",
-                       len(selected) if isinstance(selected, list) else 'N/A')
-        return _fallback_top7(df_report)
+        logger.warning("Gemini returned unexpected format. Falling back.")
+        return _fallback_top3(df_report)
 
-def _fallback_top7(df_report):
-    """Fallback: pick the top 7 by Composite Score."""
-    top7 = df_report.head(7)
+def _fallback_top3(df_report):
+    """Fallback: pick the top 3 by Composite Score."""
+    top3 = df_report.head(3)
     return [
         {'Ticker': str(row['Ticker']), 'ETF Name': row['ETF Name'], 'Reason': 'Fallback: 복합 점수 상위 종목'}
-        for _, row in top7.iterrows()
+        for _, row in top3.iterrows()
     ]
 
 def save_selected_etfs(selected, date_str):
     """Saves the Gemini-selected ETFs to a dated JSON file in data/ folder."""
     os.makedirs(DATA_DIR, exist_ok=True)
-    filename = os.path.join(DATA_DIR, f"selected_etfs_{date_str}_us.json")
+    filename = os.path.join(DATA_DIR, f"selected_etfs_{date_str}_kr.json")
     with open(filename, 'w', encoding='utf-8') as f:
         json.dump(selected, f, ensure_ascii=False, indent=2)
     logger.info("Saved selected ETFs to %s", filename)
     return filename
-
-
-import db_manager
-
-# --- MINIMAL FALLBACK NEEDED? NO. DB MANAGER HANDLES HOLDINGS MONITOR ---
 
 
 # --- MAIN ---
@@ -332,23 +329,23 @@ import db_manager
 async def main():
     setup_logging("screening")
     
-    if not is_us_market_open_today():
-        logger.info("US market is closed today. Skipping screening.")
+    if not is_kr_market_open_today():
+        logger.info("KRX market is closed today. Skipping screening.")
         return
 
     bot = telegram.Bot(token=TOKEN) if TOKEN and CHAT_ID else None
     
-    logger.info("Screening ETFs...")
+    logger.info("Screening Korean ETFs...")
     
-    # 0. Fetch Benchmark Data (SPY)
-    logger.info("Fetching Benchmark (SPY) data...")
-    df_bm = await asyncio.to_thread(get_etf_ohlcv_by_date_wrapper, start_str, end_str, "SPY")
+    # 0. Fetch Benchmark Data (KODEX 200)
+    logger.info("Fetching Benchmark (%s) data...", BENCHMARK_TICKER)
+    df_bm = await asyncio.to_thread(get_etf_ohlcv_by_date_wrapper, start_str, end_str, BENCHMARK_TICKER)
     if df_bm is None or df_bm.empty:
         logger.critical("Failed to fetch Benchmark data. Aborting.")
         return
 
     df_bm = df_bm.sort_index()
-    benchmark_ret = df_bm['종가'].pct_change().dropna()
+    benchmark_ret = df_bm['close'].pct_change().dropna()
     
     etf_tickers = await asyncio.to_thread(get_etf_ticker_list_wrapper, end_str)
     logger.info("Found %d ETF tickers for date %s", len(etf_tickers), end_str)
@@ -384,29 +381,27 @@ async def main():
         df['Composite Score'] = df[['RET3M Score', 'EXRSI3M Score']].mean(axis=1).round(2)
         df_sorted = df.sort_values('Composite Score', ascending=False).reset_index(drop=True)
         
-        output_columns = ['Ticker', 'ETF Name', 'Avg Trading Value (USD)', 'RET3M', 'RET3M Score', 'EXRSI3M', 'EXRSI3M Score', 'Composite Score']
+        output_columns = ['Ticker', 'ETF Name', 'Avg Trading Value (KRW)', 'RET3M', 'RET3M Score', 'EXRSI3M', 'EXRSI3M Score', 'Composite Score']
         df_final = df_sorted[output_columns].head(50)
         
-        # --- STEP 1: Gemini selects 5~10 ETFs ---
+        # --- STEP 1: Gemini selects 3 ETFs ---
         logger.info("=== Gemini ETF Selection ===")
         selected = select_etfs_with_gemini(df_final)
         
-        # --- NEW DB MANAGER LOGIC ---
+        # --- DB MANAGER + KIS ORDER EXECUTION ---
         await asyncio.to_thread(db_manager.init_state)
         today_str = datetime.now().strftime("%Y-%m-%d")
         
         async def get_current_price(ticker):
-            # Fetches current price using unauthenticated Yahoo Finance as fallback or KIS
             data = await asyncio.to_thread(fetch_etf_data, ticker)
             if data and not data['close'].empty:
-                return round(float(data['close'].iloc[-1]), 2)
-            return None  # Caller must handle None — never use a fallback price for real orders
+                return int(float(data['close'].iloc[-1]))
+            return None
             
         if selected:
-            # Save dated selection file
             json_path = save_selected_etfs(selected, end_str)
             
-            # 2. Buy into an empty slot
+            # Buy into an empty slot
             empty_slot = await asyncio.to_thread(db_manager.get_empty_slot)
             if empty_slot:
                 logger.info("=== Buying into Slot %s ===", empty_slot)
@@ -415,25 +410,27 @@ async def main():
                 # Allocation Logic
                 state = await asyncio.to_thread(db_manager.get_portfolio_state)
                 slot_data = state.get("slots", {}).get(empty_slot, {})
-                allocated_usd = slot_data.get("cash_balance", 0.0)
+                allocated_krw = slot_data.get("cash_balance", 0.0)
                 
-                if allocated_usd == 0.0:
-                    # First run bootstrap: Get total evaluation and divide by number of empty unallocated slots
-                    logger.info("Initial bootstrap: Fetching total USD to divide among unallocated slots.")
-                    total_usd = await asyncio.to_thread(kis_api.get_available_usd)
+                if allocated_krw == 0.0:
+                    logger.info("Initial bootstrap: Fetching total KRW to divide among unallocated slots.")
+                    if kis_api.KIS_READY:
+                        total_krw = await asyncio.to_thread(kis_api.get_available_krw)
+                    else:
+                        total_krw = STARTING_CAPITAL_KRW
+                    
                     unallocated_slots = [k for k, v in state.get("slots", {}).items() if v.get("status") == "empty" and v.get("cash_balance", 0.0) == 0.0]
                     
                     if unallocated_slots:
-                        allocated_usd = round(total_usd / len(unallocated_slots), 2)
-                        # Pre-allocate to other empty slots so they don't recalculate
+                        allocated_krw = round(total_krw / len(unallocated_slots), 0)
                         for k in unallocated_slots:
                             if k != empty_slot:
-                                state["slots"][k]["cash_balance"] = allocated_usd        
-                        await asyncio.to_thread(db_manager._save_state, state) # Save pre-allocations under the hood
+                                state["slots"][k]["cash_balance"] = allocated_krw        
+                        await asyncio.to_thread(db_manager._save_state, state)
                 
-                logger.info("Allocated USD for Slot %s: $%s", empty_slot, f"{allocated_usd:,.2f}")
+                logger.info("Allocated KRW for Slot %s: ₩%s", empty_slot, f"{allocated_krw:,.0f}")
                 
-                usd_per_etf = allocated_usd / len(selected)
+                krw_per_etf = allocated_krw / len(selected)
                 
                 new_holdings = []
                 total_spent = 0.0
@@ -446,8 +443,8 @@ async def main():
                     if price is None:
                         logger.warning("Price data unavailable for %s. Skipping buy.", t)
                         continue
-                    # Apply a 3% cash buffer to mitigate gap-up opening prices exceeding available funds
-                    shares_to_buy = int((usd_per_etf * 0.97) // price)
+                    # Apply a 3% cash buffer for price fluctuations
+                    shares_to_buy = int((krw_per_etf * 0.97) // price)
                     
                     if shares_to_buy > 0:
                         if kis_api.KIS_READY:
@@ -459,8 +456,8 @@ async def main():
                             success = True
                             logger.info("MOCK MODE: Simulated buy for %s.", t)
                             
-                        logger.info("Executed buy for Slot %s - %s (%d shares @ $%s). Success: %s",
-                                    empty_slot, t, shares_to_buy, price, success)
+                        logger.info("Executed buy for Slot %s - %s (%d shares @ ₩%s). Success: %s",
+                                    empty_slot, t, shares_to_buy, f"{price:,}", success)
                         
                         actual_spent = shares_to_buy * price
                         total_spent += actual_spent
@@ -473,10 +470,10 @@ async def main():
                             "status": "active"
                         })
                 
-                remaining_cash = round(allocated_usd - total_spent, 2)
+                remaining_cash = round(allocated_krw - total_spent, 0)
                 await asyncio.to_thread(db_manager.fill_slot, empty_slot, target_sell_date, new_holdings, today_str, initial_cash_balance=remaining_cash)
                 
-                logger.info("Bought %d ETFs into Slot %s. (Spent: $%s)", len(selected), empty_slot, round(total_spent, 2))
+                logger.info("Bought %d ETFs into Slot %s. (Spent: ₩%s)", len(new_holdings), empty_slot, f"{total_spent:,.0f}")
             else:
                 logger.warning("No empty slot available to buy new ETFs!")
     else:
@@ -485,9 +482,6 @@ async def main():
     logger.info("=== Filter Statistics ===")
     for k, v in filter_stats.items():
         logger.info("%s: %s", k, v)
-
-    # Note: Holdings monitoring and stop-loss logic have been moved completely to `etf_monitoring.py`.
-    # `etf_screening.py` only handles the selection process and purchasing of top momentum ETFs.
 
     # --- FINAL: Send log file via Telegram ---
     log_path = get_log_filepath()
@@ -499,7 +493,6 @@ if __name__ == "__main__":
         asyncio.run(main())
     except Exception as e:
         logger.critical("Unhandled exception: %s", e, exc_info=True)
-        # Attempt to send log file even on crash
         if TOKEN and CHAT_ID:
             try:
                 log_path = get_log_filepath()

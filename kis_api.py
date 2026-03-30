@@ -1,21 +1,33 @@
+"""
+KIS API Module — Korean Domestic Stock Trading
+
+Handles buy/sell order execution and balance inquiries for Korean domestic
+stocks/ETFs via the Korea Investment & Securities (KIS) open-trading-api SDK.
+
+Key functions:
+- execute_kis_buy(ticker, shares, price)  → places a domestic limit buy
+- execute_kis_sell(ticker, shares, price) → places a domestic limit sell
+- get_available_krw()                     → returns available KRW cash
+- get_total_portfolio_value()             → returns total portfolio value in KRW
+- get_kis_holdings()                      → returns actual holdings from KIS
+"""
+
 import os
-import json
-import ssl
 import logging
-import urllib.request
-import zipfile
-from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-import kis_auth as ka
+# ---------------------------------------------------------------------------
+# KIS SDK Initialisation
+# ---------------------------------------------------------------------------
+# The SDK modules (kis_auth, domestic_stock_functions) must be importable.
+# They are provided by the KIS open-trading-api repository.
+# ---------------------------------------------------------------------------
 
 try:
-    from order import order
-    from inquire_present_balance import inquire_present_balance
-    from dailyprice import dailyprice
-    
-    # Initialize KIS Auth
+    import kis_auth as ka
+    from domestic_stock_functions import order_cash, inquire_balance
+
     kis_mode = os.environ.get("KIS_MODE", "vps")
     ka.auth(kis_mode)
     KIS_READY = True
@@ -24,183 +36,155 @@ except ImportError as e:
     KIS_READY = False
 
 # ---------------------------------------------------------------------------
-# Dynamic Exchange Code Lookup
-# ---------------------------------------------------------------------------
-_EXCHANGE_MAP = {}
-
-_MASTER_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "kis_master")
-_MAP_FILE = os.path.join(_MASTER_DIR, "us_ticker_exchange_map.json")
-
-def _ensure_exchange_mapping():
-    """Download KIS master files (daily cache) and build ticker → exchange map."""
-    global _EXCHANGE_MAP
-
-    # If already loaded in this process, skip
-    if _EXCHANGE_MAP:
-        return
-
-    # Check if cached JSON exists and was updated today
-    if os.path.exists(_MAP_FILE):
-        mtime = datetime.fromtimestamp(os.path.getmtime(_MAP_FILE))
-        if mtime.date() == datetime.now().date():
-            with open(_MAP_FILE, "r", encoding="utf-8") as f:
-                _EXCHANGE_MAP = json.load(f)
-            logger.info("[Exchange Map] Loaded %d cached mappings from today.", len(_EXCHANGE_MAP))
-            return
-
-    # Download and parse fresh master files
-    logger.info("[Exchange Map] Downloading KIS master files...")
-    os.makedirs(_MASTER_DIR, exist_ok=True)
-
-    base_url = "https://new.real.download.dws.co.kr/common/master/"
-    exchanges = {"nas": "NASD", "nys": "NYSE", "ams": "AMEX"}
-    ticker_map = {}
-
-    ssl._create_default_https_context = ssl._create_unverified_context
-
-    for val, excg_cd in exchanges.items():
-        zip_name = f"{val}mst.cod.zip"
-        txt_name = f"{val}mst.cod"
-        zip_path = os.path.join(_MASTER_DIR, zip_name)
-        txt_path = os.path.join(_MASTER_DIR, txt_name)
-        url = f"{base_url}{zip_name}"
-
-        try:
-            urllib.request.urlretrieve(url, zip_path)
-            with zipfile.ZipFile(zip_path) as zf:
-                zf.extractall(_MASTER_DIR)
-
-            count = 0
-            with open(txt_path, "r", encoding="cp949", errors="ignore") as f:
-                for line in f:
-                    cols = line.strip().split("\t")
-                    if len(cols) > 4:
-                        symbol = cols[4].strip()
-                        if symbol:
-                            ticker_map[symbol] = excg_cd
-                            count += 1
-            logger.info("[Exchange Map] Parsed %d symbols from %s → %s", count, val, excg_cd)
-        except Exception as e:
-            logger.error("[Exchange Map] Error processing %s: %s", val, e)
-
-    # Persist to JSON
-    with open(_MAP_FILE, "w", encoding="utf-8") as f:
-        json.dump(ticker_map, f)
-    logger.info("[Exchange Map] Saved %d total mappings.", len(ticker_map))
-
-    _EXCHANGE_MAP = ticker_map
-
-
-def get_exchange_code(ticker):
-    """Return the KIS exchange code for a US ticker (NASD / NYSE / AMEX).
-    Falls back to 'NASD' if the ticker is not found in the master files."""
-    _ensure_exchange_mapping()
-    code = _EXCHANGE_MAP.get(ticker, "NASD")
-    return code
-
-# ---------------------------------------------------------------------------
-# Order Execution
+# Order Execution — Korean Domestic
 # ---------------------------------------------------------------------------
 
-def execute_kis_sell(ticker, shares, current_price):
-    if not KIS_READY or shares <= 0: return False
+def execute_kis_sell(ticker: str, shares: int, current_price: int) -> bool:
+    """Place a domestic limit-sell order on KRX.
+
+    Args:
+        ticker: 6-digit KRX stock/ETF code (e.g. '069500')
+        shares: Number of shares to sell
+        current_price: Limit price in KRW (integer)
+
+    Returns:
+        True if the order was accepted, False otherwise.
+    """
+    if not KIS_READY or shares <= 0:
+        return False
     try:
         env = ka.getTREnv()
-        excg = get_exchange_code(ticker)
-        
-        # Real: MOO (31) Market On Open
-        ord_dvsn = "31"
-        limit_price = "0"
-            
-        df = order(
-            cano=env.my_acct, acnt_prdt_cd=env.my_prod,
-            ovrs_excg_cd=excg, pdno=ticker, ord_qty=str(shares),
-            ovrs_ord_unpr=limit_price, ord_dv="sell", ctac_tlno="", mgco_aptm_odno="",
-            ord_svr_dvsn_cd="0", ord_dvsn=ord_dvsn, env_dv="real"
+        # ord_dvsn "00" = limit order
+        df = order_cash(
+            env_dv="real",
+            ord_dv="sell",
+            cano=env.my_acct,
+            acnt_prdt_cd=env.my_prod,
+            pdno=str(ticker),
+            ord_dvsn="00",
+            ord_qty=str(shares),
+            ord_unpr=str(int(current_price)),
+            excg_id_dvsn_cd="KRX",
         )
-        return True if df is not None and not df.empty else False
+        return df is not None and not df.empty
     except Exception as e:
         logger.error("Sell order error for %s: %s", ticker, e)
         return False
 
-def execute_kis_buy(ticker, shares, current_price):
-    if not KIS_READY or shares <= 0: return False
+
+def execute_kis_buy(ticker: str, shares: int, current_price: int) -> bool:
+    """Place a domestic limit-buy order on KRX.
+
+    Args:
+        ticker: 6-digit KRX stock/ETF code (e.g. '069500')
+        shares: Number of shares to buy
+        current_price: Limit price in KRW (integer)
+
+    Returns:
+        True if the order was accepted, False otherwise.
+    """
+    if not KIS_READY or shares <= 0:
+        return False
     try:
         env = ka.getTREnv()
-        excg = get_exchange_code(ticker)
-        
-        # Real: LOC (34) Limit On Close at current price
-        ord_dvsn = "34"
-        limit_price = str(round(current_price, 2))
-            
-        df = order(
-            cano=env.my_acct, acnt_prdt_cd=env.my_prod,
-            ovrs_excg_cd=excg, pdno=ticker, ord_qty=str(shares),
-            ovrs_ord_unpr=limit_price, ord_dv="buy", ctac_tlno="", mgco_aptm_odno="",
-            ord_svr_dvsn_cd="0", ord_dvsn=ord_dvsn, env_dv="real"
+        # ord_dvsn "00" = limit order
+        df = order_cash(
+            env_dv="real",
+            ord_dv="buy",
+            cano=env.my_acct,
+            acnt_prdt_cd=env.my_prod,
+            pdno=str(ticker),
+            ord_dvsn="00",
+            ord_qty=str(shares),
+            ord_unpr=str(int(current_price)),
+            excg_id_dvsn_cd="KRX",
         )
-        return True if df is not None and not df.empty else False
+        return df is not None and not df.empty
     except Exception as e:
         logger.error("Buy order error for %s: %s", ticker, e)
         return False
 
-def get_available_usd():
-    if not KIS_READY: return 0.0
+
+# ---------------------------------------------------------------------------
+# Balance / Holdings Inquiry — Korean Domestic
+# ---------------------------------------------------------------------------
+
+def _inquire_balance_raw():
+    """Internal helper: call inquire_balance and return (df1, df2)."""
+    if not KIS_READY:
+        return None, None
     try:
         env = ka.getTREnv()
-        df1, _, _ = inquire_present_balance(
-             cano=env.my_acct, acnt_prdt_cd=env.my_prod,
-             wcrc_frcr_dvsn_cd="02", natn_cd="840", tr_mket_cd="00", inqr_dvsn_cd="00",
-             env_dv="real"
+        df1, df2 = inquire_balance(
+            env_dv="real",
+            cano=env.my_acct,
+            acnt_prdt_cd=env.my_prod,
+            afhr_flpr_yn="N",
+            inqr_dvsn="02",
+            unpr_dvsn="01",
+            fund_sttl_icld_yn="N",
+            fncg_amt_auto_rdpt_yn="N",
+            prcs_dvsn="00",
         )
-        if df1 is not None and not df1.empty and "frcr_prsl_tot_amt" in df1.columns:
-             return float(df1.iloc[0]["frcr_prsl_tot_amt"])
+        return df1, df2
     except Exception as e:
-        logger.error("Error fetching USD balance: %s", e)
+        logger.error("Error calling inquire_balance: %s", e)
+        return None, None
+
+
+def get_available_krw() -> float:
+    """Returns the available KRW cash balance."""
+    df1, _ = _inquire_balance_raw()
+    if df1 is not None and not df1.empty:
+        # dnca_tot_amt = 예수금총금액 (available cash)
+        for col in ("dnca_tot_amt", "prvs_rcdl_excc_amt", "nxdy_excc_amt"):
+            if col in df1.columns:
+                try:
+                    return float(df1.iloc[0][col])
+                except (ValueError, TypeError):
+                    continue
     return 0.0
 
-def get_total_portfolio_value():
-    if not KIS_READY: return 0.0
-    try:
-        env = ka.getTREnv()
-        df1, _, _ = inquire_present_balance(
-             cano=env.my_acct, acnt_prdt_cd=env.my_prod,
-             wcrc_frcr_dvsn_cd="02", natn_cd="840", tr_mket_cd="00", inqr_dvsn_cd="00",
-             env_dv="real"
-        )
-        
-        usd_cash = 0.0
+
+def get_total_portfolio_value() -> float:
+    """Returns total portfolio value (cash + holdings) in KRW."""
+    df1, _ = _inquire_balance_raw()
+    if df1 is not None and not df1.empty:
+        cash = 0.0
         holdings_value = 0.0
-        if df1 is not None and not df1.empty:
-             if "frcr_prsl_tot_amt" in df1.columns:
-                  usd_cash = float(df1.iloc[0]["frcr_prsl_tot_amt"])
-             if "frcr_evlu_amt_smtl" in df1.columns:
-                  holdings_value = float(df1.iloc[0]["frcr_evlu_amt_smtl"])
-                  
-        return usd_cash + holdings_value
-    except Exception as e:
-        logger.error("Error fetching Total Portfolio value: %s", e)
+        if "dnca_tot_amt" in df1.columns:
+            try:
+                cash = float(df1.iloc[0]["dnca_tot_amt"])
+            except (ValueError, TypeError):
+                pass
+        if "tot_evlu_amt" in df1.columns:
+            try:
+                holdings_value = float(df1.iloc[0]["tot_evlu_amt"])
+            except (ValueError, TypeError):
+                pass
+        # If tot_evlu_amt already includes cash, just return it
+        if holdings_value > 0 and cash > 0:
+            # tot_evlu_amt is usually the total (cash + stock eval)
+            return holdings_value
+        return cash + holdings_value
     return 0.0
 
-def get_kis_holdings():
-    """Returns a list of dictionaries with actual holdings from KIS: [{'ticker': 'SPY', 'shares': 10}, ...]"""
-    if not KIS_READY: return []
-    try:
-        env = ka.getTREnv()
-        _, df2, _ = inquire_present_balance(
-             cano=env.my_acct, acnt_prdt_cd=env.my_prod,
-             wcrc_frcr_dvsn_cd="02", natn_cd="840", tr_mket_cd="00", inqr_dvsn_cd="00",
-             env_dv="real"
-        )
-        holdings = []
-        if df2 is not None and not df2.empty:
-            for _, row in df2.iterrows():
-                if "ovrs_pdno" in row and "ccld_qty_smtl1" in row:
-                    ticker = str(row["ovrs_pdno"]).strip()
-                    shares = float(row["ccld_qty_smtl1"]) # Shares remaining
-                    if shares > 0:
-                        holdings.append({'ticker': ticker, 'shares': shares})
-        return holdings
-    except Exception as e:
-        logger.error("Error fetching KIS holdings: %s", e)
-    return []
+
+def get_kis_holdings() -> list[dict]:
+    """Returns a list of actual KIS holdings: [{'ticker': '069500', 'shares': 10}, ...]"""
+    _, df2 = _inquire_balance_raw()
+    holdings = []
+    if df2 is not None and not df2.empty:
+        for _, row in df2.iterrows():
+            # pdno = 상품번호 (종목코드), hldg_qty = 보유수량
+            ticker_col = next((c for c in ("pdno", "mksc_shrn_iscd") if c in row.index), None)
+            shares_col = next((c for c in ("hldg_qty", "ccld_qty_smtl1") if c in row.index), None)
+            if ticker_col and shares_col:
+                ticker = str(row[ticker_col]).strip()
+                try:
+                    shares = float(row[shares_col])
+                except (ValueError, TypeError):
+                    shares = 0.0
+                if shares > 0:
+                    holdings.append({"ticker": ticker, "shares": shares})
+    return holdings
