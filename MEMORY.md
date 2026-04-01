@@ -40,5 +40,11 @@ The project runs a 4-Slot Rotation investment system for **Korea-listed ETFs**.
   - Explicitly specified `sll_type="01"` for KIS sell orders.
   - Set default `KIS_MODE` to `prod` in `auth()`.
 
+- [x] GitHub Actions Environment Fixes (2026-04-01)
+  - Fixed `FinanceDataReader` pip resolution issue.
+  - Corrected monitoring cron schedule to 10:00 AM KST.
+  - Supressed Node 20 GitHub Action deprecation warnings (`FORCE_JAVASCRIPT_ACTIONS_TO_NODE24`).
+  - Set `if-no-files-found: ignore` on log artifacts to suppress upload warnings.
+
 ## Active Task
 (none)
