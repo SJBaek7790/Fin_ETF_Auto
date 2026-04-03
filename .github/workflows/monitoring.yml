@@ -48,7 +48,7 @@ jobs:
         run: |
           git config --global user.name 'github-actions[bot]'
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
-          git add data/*.json
+          git add -f data/*.json
           if ! git diff --cached --quiet; then
             git commit -m "Auto-update portfolio state [skip ci]"
             git push

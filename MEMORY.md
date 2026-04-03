@@ -46,5 +46,9 @@ The project runs a 4-Slot Rotation investment system for **Korea-listed ETFs**.
   - Supressed Node 20 GitHub Action deprecation warnings (`FORCE_JAVASCRIPT_ACTIONS_TO_NODE24`).
   - Set `if-no-files-found: ignore` on log artifacts to suppress upload warnings.
 
+- [x] CI Bug Fixes — Screening Workflow (2026-04-03)
+  - Added `pyyaml` to `requirements.txt` (KIS SDK depends on `yaml` module).
+  - Fixed `git add data/*.json` → `git add -f data/*.json` in `screening.yml` and `monitoring.yml` (data/*.json is in `.gitignore`).
+
 ## Active Task
 (none)
