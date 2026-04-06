@@ -30,7 +30,7 @@ def setup_logging(script_name: str, console_level=logging.INFO, file_level=loggi
     os.makedirs(_LOG_DIR, exist_ok=True)
 
     today_str = datetime.now().strftime("%Y-%m-%d")
-    log_filename = f"{script_name}_{today_str}.log"
+    log_filename = f"{script_name}_{today_str}.txt"
     _current_log_path = os.path.join(_LOG_DIR, log_filename)
 
     formatter = logging.Formatter(

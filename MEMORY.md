@@ -51,4 +51,8 @@ The project runs a 4-Slot Rotation investment system for **Korea-listed ETFs**.
   - Fixed `git add data/*.json` → `git add -f data/*.json` in `screening.yml` and `monitoring.yml` (data/*.json is in `.gitignore`).
 
 ## Active Task
+- [x] Fix Crypto module missing error by adding `pycryptodome` to `requirements.txt`
+- [x] Change log format output from `.log` to `.txt` to allow viewing on mobile (via `log_config.py` updates)
+
+## Active Task
 (none)
