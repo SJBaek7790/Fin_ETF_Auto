@@ -26,10 +26,28 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Clone KIS SDK
+      - name: Clone KIS SDK & Setup Config
         run: |
           git clone --depth 1 https://github.com/koreainvestment/open-trading-api.git /tmp/kis-sdk
           mkdir -p ~/KIS/config
+          cat <<EOF > ~/KIS/config/kis_devlp.yaml
+          my_app: "${{ secrets.KIS_APP_KEY }}"
+          my_sec: "${{ secrets.KIS_APP_SECRET }}"
+          paper_app: "${{ secrets.KIS_APP_KEY }}"
+          paper_sec: "${{ secrets.KIS_APP_SECRET }}"
+          my_acct_stock: "${{ secrets.KIS_CANO }}"
+          my_paper_stock: "${{ secrets.KIS_CANO }}"
+          my_prod: "${{ secrets.KIS_ACNT_PRDT_CD }}"
+          my_token: ""
+          my_agent: "Mozilla/5.0"
+          my_htsid: "kis"
+          my_acct_future: ""
+          my_paper_future: ""
+          prod: "https://openapi.koreainvestment.com:9443"
+          vps: "https://openapivts.koreainvestment.com:29443"
+          ops: "ws://ops.koreainvestment.com:21000"
+          vops: "ws://ops.koreainvestment.com:31000"
+          EOF
 
       - name: Run ETF Monitoring
         env:
