@@ -29,6 +29,7 @@ jobs:
       - name: Clone KIS SDK
         run: |
           git clone --depth 1 https://github.com/koreainvestment/open-trading-api.git /tmp/kis-sdk
+          mkdir -p ~/KIS/config
 
       - name: Run ETF Screening
         env:
