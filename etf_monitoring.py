@@ -16,8 +16,8 @@ import pandas as pd
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from log_config import setup_logging, get_logger, get_log_filepath
-from common import send_telegram_document_sync, get_market_ohlcv_wrapper, is_kr_market_open_today
+from log_config import setup_logging, get_logger
+from common import send_telegram_message, get_market_ohlcv_wrapper, is_kr_market_open_today
 
 import kis_api
 import db_manager
@@ -109,17 +109,6 @@ def main():
                     slot_proceeds += round(shares * curr_price, 0)
                     logger.info("Executed time-stop sell for Slot %s - %s (%d shares). Success: %s", s, t, shares, success)
                     
-                    db_manager.log_trade(
-                        action="SELL",
-                        ticker=t,
-                        shares=shares,
-                        price=curr_price,
-                        slot_key=s,
-                        name=h.get('name', ''),
-                        reason="Target Date Reached",
-                        status="target-sell"
-                    )
-                    
             if not all_holdings_sold:
                 logger.error("Slot %s had failed sells. Aborting clear_slot to prevent desync.", s)
                 continue
@@ -137,9 +126,7 @@ def main():
     
     if not active_holdings:
         logger.info("No active holdings found in portfolio.")
-        log_path = get_log_filepath()
-        if log_path:
-            send_telegram_document_sync(log_path, caption=f"ETF Monitoring Log ({today_str})")
+        send_telegram_message(f"📊 ETF Monitor ({today_str})\nHoldings: 0 | No active positions\n✅ All clear")
         return
         
     logger.info("Found %d active holdings to monitor.", len(active_holdings))
@@ -263,6 +250,7 @@ def main():
                 db_manager.trigger_stop_loss(slot_key, ticker, reason, execute_price, shares_to_sell)
     
     # Calculate Total Portfolio Value using KIS API
+    total_value = 0
     if kis_api.KIS_READY:
         logger.info("=== Fetching Daily Portfolio Value via KIS API ===")
         total_value = kis_api.get_total_portfolio_value()
@@ -283,10 +271,20 @@ def main():
     else:
         logger.info("No alerts to send.")
 
-    # --- FINAL: Send log file via Telegram ---
-    log_path = get_log_filepath()
-    if log_path:
-        send_telegram_document_sync(log_path, caption=f"ETF Monitoring Log ({today_str})")
+    # --- FINAL: Send compact summary via Telegram ---
+    n_holdings = len(active_holdings)
+    n_alerts = len(all_alerts)
+    summary_lines = [f"📊 ETF Monitor ({today_str})"]
+    parts = [f"Holdings: {n_holdings}", f"Alerts: {n_alerts}"]
+    if total_value > 0:
+        parts.append(f"₩{total_value:,.0f}")
+    summary_lines.append(" | ".join(parts))
+    if all_alerts:
+        brief = [a.strip().split('\n')[0] for a in all_alerts[:3]]
+        summary_lines.extend(brief)
+    else:
+        summary_lines.append("✅ All clear")
+    send_telegram_message("\n".join(summary_lines))
         
 if __name__ == "__main__":
     try:
@@ -295,8 +293,6 @@ if __name__ == "__main__":
         import traceback
         logger.critical("CRITICAL ERROR in etf_monitoring.py: %s", e, exc_info=True)
         try:
-            log_path = get_log_filepath()
-            if log_path:
-                send_telegram_document_sync(log_path, caption="❌ ETF Monitoring CRASH Log")
+            send_telegram_message(f"❌ ETF Monitoring CRASH\n{e}")
         except Exception as tel_e:
             logger.error("Failed to send crash log to Telegram: %s", tel_e)

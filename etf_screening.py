@@ -25,9 +25,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from google import genai
 from google.genai import types
 
-from log_config import setup_logging, get_logger, get_log_filepath
+from log_config import setup_logging, get_logger
 from common import (
-    send_telegram_document_async, send_telegram_document_sync,
+    send_telegram_message, send_telegram_message_async,
     get_etf_ticker_list_wrapper, get_etf_ohlcv_by_date_wrapper, get_etf_ticker_name_wrapper,
     is_kr_market_open_today
 )
@@ -199,7 +199,7 @@ You are a Senior Quant Portfolio Manager specializing in the Korean equity marke
 Analyze the provided momentum top 50 Korea-listed ETF data and select the **'elite universe of exactly 3 ETFs'**.
 
 # Selection Logic & Constraints (Strict Adherence)
-1. **Exclude Leverage/Inverse:** Unconditionally exclude funds with keywords like '2X', '3X', 'Ultra', 'Bull', 'Bear', 'Inverse', 'Short', 'VIX', 'ETN', '레버리지', '인버스', '곱버스', '선물'.
+1. **Exclude Leverage/Inverse:** Unconditionally exclude funds with keywords like '2X', '3X', 'Ultra', 'Bull', 'Bear', 'Inverse', 'Short', 'VIX', 'ETN', '레버리지', '인버스', '곱버스', '선물', 'TDF', '커버드콜'.
 2. **Representation & Deduplication:** If ETFs tracking the same GICS sector or Korean macro theme are duplicated, keep only the 1 with the highest 'Avg Trading Value (KRW)' and market representation, and exclude the rest.
 3. **Liquidity & Credit Risk Filtering:** Exclude products with significantly low trading volume, or those with issuer credit risk like ETNs.
 4. **Portfolio Diversity:** Ensure the final 3 ETFs are not 100% concentrated in a single theme. Distribute across 2~3 leading sectors/themes (GICS sectors or Korean macro trends). (However, overweighting is permitted if there is an overwhelmingly clear dominant market theme).
@@ -333,6 +333,9 @@ async def main():
         'low_trading': 0, 'failed_momentum': 0,
         'missing_metrics': 0, 'passed': 0, 'error': 0
     }
+    selected = []
+    empty_slot = None
+    new_holdings = []
     
     logger.info("Screening Korean ETFs...")
     
@@ -485,10 +488,19 @@ async def main():
     for k, v in filter_stats.items():
         logger.info("%s: %s", k, v)
 
-    # --- FINAL: Send log file via Telegram ---
-    log_path = get_log_filepath()
-    if bot and log_path:
-        await send_telegram_document_async(log_path, caption=f"ETF Screening Log ({end_str})", bot=bot)
+    # --- FINAL: Send compact summary via Telegram ---
+    summary_lines = [f"🔍 ETF Screening ({end_str})"]
+    summary_lines.append(f"Scanned: {filter_stats['total']} | Passed: {filter_stats['passed']}")
+    if new_holdings:
+        names = [h['name'] for h in new_holdings]
+        summary_lines.append(f"Slot {empty_slot} | Bought: {', '.join(names)}")
+    elif selected:
+        names = [s.get('ETF Name', '?') for s in selected]
+        summary_lines.append(f"Selected: {', '.join(names)} (no slot available)")
+    else:
+        summary_lines.append("No ETFs selected")
+    if bot:
+        await send_telegram_message_async("\n".join(summary_lines), bot=bot)
 
 if __name__ == "__main__":
     try:
@@ -497,8 +509,6 @@ if __name__ == "__main__":
         logger.critical("Unhandled exception: %s", e, exc_info=True)
         if TOKEN and CHAT_ID:
             try:
-                log_path = get_log_filepath()
-                if log_path:
-                    send_telegram_document_sync(log_path, caption=f"❌ ETF Screening CRASH Log")
+                send_telegram_message(f"❌ ETF Screening CRASH\n{e}")
             except Exception as inner_e:
                 logger.error("Failed to send crash log via Telegram: %s", inner_e)

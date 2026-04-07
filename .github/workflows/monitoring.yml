@@ -3,7 +3,7 @@ name: ETF Monitoring (Daily)
 on:
   schedule:
     # Weekday 10:00 AM KST = Weekday 1:00 AM UTC
-    - cron: '0 1 * * 1-5'
+    - cron: '2 1 * * 1-5'
   workflow_dispatch:
 
 env:

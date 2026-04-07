@@ -54,5 +54,9 @@ The project runs a 4-Slot Rotation investment system for **Korea-listed ETFs**.
 - [x] Fix Crypto module missing error by adding `pycryptodome` to `requirements.txt`
 - [x] Change log format output from `.log` to `.txt` to allow viewing on mobile (via `log_config.py` updates)
 
+- [x] Fix FileNotFoundError for `kis_devlp.yaml` by injecting a cat generator into the GitHub Actions runner workflows using Secrets.
+
+- [x] Compact Telegram notifications: replaced full log file sends with 2-3 line summary messages in both `etf_monitoring.py` and `etf_screening.py`. Full logs still available as GitHub Actions artifacts.
+
 ## Active Task
 (none)

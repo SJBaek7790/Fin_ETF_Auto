@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 DATA_DIR = 'data'
 STATE_FILE = os.path.join(DATA_DIR, 'portfolio_state.json')
 VALUE_HISTORY_FILE = os.path.join(DATA_DIR, 'portfolio_value_history.json')
-TRADE_HISTORY_FILE = os.path.join(DATA_DIR, 'trade_history.json')
+
 PORTFOLIO_LOCK_FILE = os.path.join(DATA_DIR, 'portfolio.lock')
 
 _lock_local = threading.local()
@@ -92,57 +92,7 @@ def save_portfolio_state_locked(state):
     """Public wrapper to save state safely with lock."""
     return _save_state(state)
 
-def _load_trade_history():
-    """Loads the trade history from JSON."""
-    if not os.path.exists(TRADE_HISTORY_FILE):
-        return []
-    try:
-        with open(TRADE_HISTORY_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except Exception as e:
-        logger.error("Error loading trade history: %s", e)
-        return []
 
-def _save_trade_history(history):
-    """Saves the trade history to JSON."""
-    try:
-        temp_file = TRADE_HISTORY_FILE + ".tmp"
-        with open(temp_file, 'w', encoding='utf-8') as f:
-            json.dump(history, f, indent=2, ensure_ascii=False)
-        os.replace(temp_file, TRADE_HISTORY_FILE)
-        return True
-    except Exception as e:
-        logger.error("Error saving trade history: %s", e)
-        return False
-
-def _log_trade_unlocked(action, ticker, shares, price, slot_key, name="", reason="", status=""):
-    """
-    Internal unlocked helper to log a trade (BUY, SELL) to the trade history file.
-    """
-    history = _load_trade_history()
-    
-    trade_record = {
-        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "action": action,
-        "ticker": ticker,
-        "name": name,
-        "slot": slot_key,
-        "shares": shares,
-        "price": price,
-        "reason": reason,
-        "status": status
-    }
-    
-    history.append(trade_record)
-    _save_trade_history(history)
-    logger.info("Logged %s trade for %s (%s shares @ %s) in Slot %s.", action, ticker, shares, price, slot_key)
-
-@with_portfolio_lock
-def log_trade(action, ticker, shares, price, slot_key, name="", reason="", status=""):
-    """
-    Public wrapper to log a trade with locking.
-    """
-    _log_trade_unlocked(action, ticker, shares, price, slot_key, name, reason, status)
 
 def get_portfolio_state():
     """Returns the current portfolio state map."""
@@ -179,20 +129,6 @@ def fill_slot(slot_key, target_sell_date, holdings, buy_date=None, initial_cash_
         "cash_balance": initial_cash_balance
     }
     _save_state(state)
-    
-    # Log the BUY trades
-    for h in holdings:
-        _log_trade_unlocked(
-            action="BUY",
-            ticker=h.get('ticker'),
-            shares=h.get('shares'),
-            price=h.get('buy_price'),
-            slot_key=slot_key,
-            name=h.get('name', ''),
-            reason="Initial Allocation",
-            status="active"
-        )
-        
     return True
 
 @with_portfolio_lock
@@ -238,18 +174,6 @@ def trigger_stop_loss(slot_key, ticker_to_stop, sell_reason, sell_price, execute
             
             # Add proceeds to cash balance
             slot['cash_balance'] = round(slot.get('cash_balance', 0.0) + proceeds, 0)
-            
-            # Log the SELL trade
-            _log_trade_unlocked(
-                action="SELL",
-                ticker=str(ticker_to_stop),
-                shares=executed_shares,
-                price=sell_price,
-                slot_key=slot_key,
-                name=holding.get('name', ''),
-                reason=sell_reason,
-                status="cash"
-            )
             
             found = True
             break
@@ -385,17 +309,6 @@ def reconcile_with_kis_holdings(kis_holdings):
                         holding['status'] = 'Corporate Action Suspected'
                         msg = f"🚨 EMERGENCY: Reconciliation: CRITICAL DISCREPANCY for {ticker} in Slot {slot_key}. Expected {expected_shares}, found {actual_shares}. Suspected Corporate Action/Reverse Split. Holding locked. Manual intervention required!"
                         alerts.append(msg)
-                        
-                        _log_trade_unlocked(
-                            action="RECONCILE_SUSPEND",
-                            ticker=ticker,
-                            shares=shortfall,
-                            price=buy_price,
-                            slot_key=slot_key,
-                            name=holding.get('name', ''),
-                            reason="Corporate Action Suspected (>50% share drop)",
-                            status="suspended"
-                        )
                         state_changed = True
                         continue
 
@@ -404,33 +317,11 @@ def reconcile_with_kis_holdings(kis_holdings):
                         holding['status'] = 'failed_buy'
                         msg = f"Reconciliation: Buy order for {ticker} in Slot {slot_key} failed to execute. Removed {expected_shares} outstanding shares and refunded ₩{refund_amount:,.0f}."
                         alerts.append(msg)
-                        
-                        _log_trade_unlocked(
-                            action="RECONCILE_REMOVE",
-                            ticker=ticker,
-                            shares=shortfall,
-                            price=buy_price,
-                            slot_key=slot_key,
-                            name=holding.get('name', ''),
-                            reason="Order failed to execute (0 actual shares)",
-                            status="failed_buy"
-                        )
                     else:
                         # Partial fill or partial missing shares
                         holding['shares'] = actual_shares
                         msg = f"Reconciliation: Discrepancy for {ticker} in Slot {slot_key}. Expected {expected_shares}, found {actual_shares}. Refunded partial unfilled amount of ₩{refund_amount:,.0f}."
                         alerts.append(msg)
-                        
-                        _log_trade_unlocked(
-                            action="RECONCILE_ADJUST",
-                            ticker=ticker,
-                            shares=shortfall,
-                            price=buy_price,
-                            slot_key=slot_key,
-                            name=holding.get('name', ''),
-                            reason=f"Partial fill/mismatch ({expected_shares} -> {actual_shares})",
-                            status="active"
-                        )
                         
                     # Refund the cash balance to the slot
                     current_cash = float(slot_data.get('cash_balance', 0.0))
@@ -444,17 +335,6 @@ def reconcile_with_kis_holdings(kis_holdings):
                     
                     msg = f"⚠️ WARNING: Reconciliation: Discrepancy for {ticker} in Slot {slot_key}. Expected {expected_shares}, found {actual_shares}. DB undercounted by {overage}. Adjusted DB actively upward."
                     alerts.append(msg)
-                    
-                    _log_trade_unlocked(
-                        action="RECONCILE_UPWARD",
-                        ticker=ticker,
-                        shares=overage,
-                        price=buy_price,
-                        slot_key=slot_key,
-                        name=holding.get('name', ''),
-                        reason=f"DB undercounted ({expected_shares} -> {actual_shares})",
-                        status="active"
-                    )
                     state_changed = True
 
             # Clean up the slot if it has no active holdings at all after reconciliation
