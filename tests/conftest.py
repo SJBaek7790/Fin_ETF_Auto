@@ -48,12 +48,10 @@ def tmp_data_dir(tmp_path, monkeypatch):
     import db_manager
 
     state_file = str(tmp_path / "portfolio_state.json")
-    trade_file = str(tmp_path / "trade_history.json")
     value_file = str(tmp_path / "portfolio_value_history.json")
 
     monkeypatch.setattr(db_manager, "DATA_DIR", str(tmp_path))
     monkeypatch.setattr(db_manager, "STATE_FILE", state_file)
-    monkeypatch.setattr(db_manager, "TRADE_HISTORY_FILE", trade_file)
     monkeypatch.setattr(db_manager, "VALUE_HISTORY_FILE", value_file)
 
     return tmp_path

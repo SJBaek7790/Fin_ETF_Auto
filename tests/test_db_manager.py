@@ -50,16 +50,6 @@ class TestFillSlot:
         assert len(slot["holdings"]) == 1
         assert slot["holdings"][0]["ticker"] == "069500"
 
-    def test_fill_slot_logs_trade(self, tmp_data_dir):
-        db_manager.init_state()
-        holdings = [
-            {"ticker": "233740", "name": "KODEX 코스닥150", "shares": 3, "buy_price": 12000, "status": "active"}
-        ]
-        db_manager.fill_slot("2", "2026-04-20", holdings)
-        history = db_manager._load_trade_history()
-        assert len(history) == 1
-        assert history[0]["action"] == "BUY"
-        assert history[0]["ticker"] == "233740"
 
     def test_fill_invalid_slot_returns_false(self, tmp_data_dir):
         db_manager.init_state()
