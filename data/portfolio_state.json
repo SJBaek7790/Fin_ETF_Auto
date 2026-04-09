@@ -1,0 +1,45 @@
+{
+  "slots": {
+    "1": {
+      "status": "invested",
+      "buy_date": "2026-04-07",
+      "target_sell_date": "2026-05-06",
+      "holdings": [
+        {
+          "ticker": "498400",
+          "name": "KODEX 200타겟위클리커버드콜",
+          "shares": 47,
+          "buy_price": 17080,
+          "status": "active"
+        },
+        {
+          "ticker": "0091P0",
+          "name": "TIGER 코리아원자력",
+          "shares": 39,
+          "buy_price": 20880,
+          "status": "active"
+        },
+        {
+          "ticker": "102970",
+          "name": "KODEX 증권",
+          "shares": 32,
+          "buy_price": 25255,
+          "status": "active"
+        }
+      ],
+      "cash_balance": 98410.0
+    },
+    "2": {
+      "status": "empty",
+      "cash_balance": 2523650.0
+    },
+    "3": {
+      "status": "empty",
+      "cash_balance": 2523650.0
+    },
+    "4": {
+      "status": "empty",
+      "cash_balance": 2523650.0
+    }
+  }
+}
