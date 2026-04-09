@@ -50,13 +50,14 @@ The project runs a 4-Slot Rotation investment system for **Korea-listed ETFs**.
   - Added `pyyaml` to `requirements.txt` (KIS SDK depends on `yaml` module).
   - Fixed `git add data/*.json` → `git add -f data/*.json` in `screening.yml` and `monitoring.yml` (data/*.json is in `.gitignore`).
 
-## Active Task
 - [x] Fix Crypto module missing error by adding `pycryptodome` to `requirements.txt`
 - [x] Change log format output from `.log` to `.txt` to allow viewing on mobile (via `log_config.py` updates)
-
 - [x] Fix FileNotFoundError for `kis_devlp.yaml` by injecting a cat generator into the GitHub Actions runner workflows using Secrets.
-
 - [x] Compact Telegram notifications: replaced full log file sends with 2-3 line summary messages in both `etf_monitoring.py` and `etf_screening.py`. Full logs still available as GitHub Actions artifacts.
+- [x] Bugfix (2026-04-09): Ensure `etf_monitoring.py` always logs daily portfolio value even if there are no active holdings (100% cash portfolio).
+- [x] Bugfix (2026-04-09): Suppress normal "All clear" Telegram messages; notify only on alerts or crashes.
+- [x] Bugfix (2026-04-09): Refactor `db_manager.py` reconcile logic to aggregate ETF expectations across all slots, preventing database inflation when the same ETF is held in multiple slots.
+- [x] Architectural logging: Updated discrepancy handling to deduct shortfalls from the most recently purchased slots first and add overages to the oldest slot tracking that ticker.
 
 ## Active Task
-(none)
+None

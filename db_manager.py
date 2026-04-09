@@ -13,7 +13,6 @@ logger = logging.getLogger(__name__)
 DATA_DIR = 'data'
 STATE_FILE = os.path.join(DATA_DIR, 'portfolio_state.json')
 VALUE_HISTORY_FILE = os.path.join(DATA_DIR, 'portfolio_value_history.json')
-
 PORTFOLIO_LOCK_FILE = os.path.join(DATA_DIR, 'portfolio.lock')
 
 _lock_local = threading.local()
@@ -283,83 +282,102 @@ def reconcile_with_kis_holdings(kis_holdings):
     if not state:
         return []
     
-    # Create a fast lookup map for actual holdings
     actual_map = {str(k['ticker']): float(k['shares']) for k in kis_holdings}
     alerts = []
     state_changed = False
-
+    
+    # 1. Group active holdings by ticker across all slots
+    holdings_by_ticker = {}
     for slot_key, slot_data in state.get('slots', {}).items():
-        if slot_data.get('status') == 'invested':
-            active_holdings = [h for h in slot_data.get('holdings', []) if h.get('status') == 'active']
-            
-            for holding in active_holdings:
-                ticker = str(holding.get('ticker'))
-                expected_shares = float(holding.get('shares', 0))
-                
-                # If the ticker exists in actual_map, use it; else actual is 0
-                actual_shares = actual_map.get(ticker, 0.0)
-                
-                if expected_shares > actual_shares:
-                    shortfall = expected_shares - actual_shares
-                    buy_price = float(holding.get('buy_price', 0.0))
-                    refund_amount = round(shortfall * buy_price, 0)
-                    
-                    if (shortfall / expected_shares) >= 0.5:
-                        # > 50% drop in shares - possible corporate action/reverse split
-                        holding['status'] = 'Corporate Action Suspected'
-                        msg = f"🚨 EMERGENCY: Reconciliation: CRITICAL DISCREPANCY for {ticker} in Slot {slot_key}. Expected {expected_shares}, found {actual_shares}. Suspected Corporate Action/Reverse Split. Holding locked. Manual intervention required!"
-                        alerts.append(msg)
-                        state_changed = True
-                        continue
-
-                    if actual_shares == 0.0:
-                        # The entire order failed to execute or was completely mismatched
-                        holding['status'] = 'failed_buy'
-                        msg = f"Reconciliation: Buy order for {ticker} in Slot {slot_key} failed to execute. Removed {expected_shares} outstanding shares and refunded ₩{refund_amount:,.0f}."
-                        alerts.append(msg)
-                    else:
-                        # Partial fill or partial missing shares
-                        holding['shares'] = actual_shares
-                        msg = f"Reconciliation: Discrepancy for {ticker} in Slot {slot_key}. Expected {expected_shares}, found {actual_shares}. Refunded partial unfilled amount of ₩{refund_amount:,.0f}."
-                        alerts.append(msg)
-                        
-                    # Refund the cash balance to the slot
-                    current_cash = float(slot_data.get('cash_balance', 0.0))
-                    slot_data['cash_balance'] = round(current_cash + refund_amount, 0)
-                    state_changed = True
-                    
-                elif actual_shares > expected_shares:
-                    overage = actual_shares - expected_shares
-                    buy_price = float(holding.get('buy_price', 0.0))
-                    holding['shares'] = actual_shares
-                    
-                    msg = f"⚠️ WARNING: Reconciliation: Discrepancy for {ticker} in Slot {slot_key}. Expected {expected_shares}, found {actual_shares}. DB undercounted by {overage}. Adjusted DB actively upward."
-                    alerts.append(msg)
-                    state_changed = True
-
-            # Clean up the slot if it has no active holdings at all after reconciliation
-            still_active = [h for h in slot_data.get('holdings', []) if h.get('status') == 'active']
-            if not still_active and state_changed:
-                slot_data['status'] = 'empty'
-                msg = f"Reconciliation: Slot {slot_key} became empty after failed limits. Reverted to empty status with cash balance ₩{slot_data['cash_balance']:,.0f}."
-                alerts.append(msg)
-
-    if state_changed:
-        _save_state(state)
-
-    # 2. Check for orphaned / rogue holdings in actual_map that aren't in DB
-    all_known_tickers = set()
-    for slot_data in state.get('slots', {}).values():
         if slot_data.get('status') == 'invested':
             for h in slot_data.get('holdings', []):
                 if h.get('status') == 'active':
-                    all_known_tickers.add(str(h.get('ticker')))
-
+                    ticker = str(h.get('ticker'))
+                    if ticker not in holdings_by_ticker:
+                        holdings_by_ticker[ticker] = []
+                    holdings_by_ticker[ticker].append({
+                        'slot_key': slot_key,
+                        'holding': h,
+                        'slot_data': slot_data
+                    })
+                    
+    all_known_tickers = set(holdings_by_ticker.keys())
+    
+    # 2. Reconcile each tracked ticker
+    for ticker, h_list in holdings_by_ticker.items():
+        actual_total = actual_map.get(ticker, 0.0)
+        expected_total = sum(float(item['holding'].get('shares', 0)) for item in h_list)
+        
+        if expected_total > actual_total:
+            # Shortfall: Deduct from newest slots first (sort by buy_date descending)
+            h_list.sort(key=lambda x: x['slot_data'].get('buy_date', ''), reverse=True)
+            
+            shortfall = expected_total - actual_total
+            for item in h_list:
+                if shortfall <= 0:
+                    break
+                
+                h = item['holding']
+                slot_key = item['slot_key']
+                slot_data = item['slot_data']
+                
+                h_shares = float(h.get('shares', 0))
+                if h_shares == 0:
+                    continue
+                    
+                deduct = min(h_shares, shortfall)
+                buy_price = float(h.get('buy_price', 0.0))
+                refund_amount = round(deduct * buy_price, 0)
+                
+                h['shares'] = h_shares - deduct
+                shortfall -= deduct
+                
+                current_cash = float(slot_data.get('cash_balance', 0.0))
+                slot_data['cash_balance'] = round(current_cash + refund_amount, 0)
+                state_changed = True
+                
+                if h['shares'] == 0:
+                    h['status'] = 'failed_buy' if actual_total == 0 else 'cash'
+                    msg = f"Reconciliation: Buy order for {ticker} in Slot {slot_key} failed or missing. Removed {deduct} shares and refunded ₩{refund_amount:,.0f}."
+                else:
+                    msg = f"Reconciliation: Partial fill/discrepancy for {ticker} in Slot {slot_key}. Removed {deduct} shares (now {h['shares']}) and refunded ₩{refund_amount:,.0f}."
+                
+                # Check for > 50% drop (Reverse split?)
+                if (deduct / h_shares) >= 0.5 and actual_total > 0:
+                    msg = f"🚨 EMERGENCY: Reconciliation: CRITICAL DISCREPANCY for {ticker} in Slot {slot_key}. Deducted {deduct} shares. Suspected Corporate Action/Reverse Split."
+                    h['status'] = 'Corporate Action Suspected'
+                
+                alerts.append(msg)
+                
+        elif actual_total > expected_total:
+            overage = actual_total - expected_total
+            # Sort by buy_date ascending to add to oldest slot
+            h_list.sort(key=lambda x: x['slot_data'].get('buy_date', ''))
+            oldest_holding = h_list[0]['holding']
+            oldest_holding['shares'] = float(oldest_holding.get('shares', 0)) + overage
+            slot_key = h_list[0]['slot_key']
+            msg = f"⚠️ WARNING: Reconciliation: Discrepancy for {ticker}. Expected {expected_total}, found {actual_total}. DB undercounted by {overage}. Adjusted DB actively upward in Slot {slot_key}."
+            alerts.append(msg)
+            state_changed = True
+            
+    # 3. Clean up empty slots
+    for slot_key, slot_data in state.get('slots', {}).items():
+        if slot_data.get('status') == 'invested':
+            still_active = [h for h in slot_data.get('holdings', []) if h.get('status') == 'active']
+            if not still_active and state_changed:
+                slot_data['status'] = 'empty'
+                msg = f"Reconciliation: Slot {slot_key} became empty. Reverted to empty status with cash balance ₩{slot_data['cash_balance']:,.0f}."
+                alerts.append(msg)
+                
+    # 4. Check for orphaned / rogue holdings
     for actual_ticker, actual_shares in actual_map.items():
         if actual_ticker not in all_known_tickers and actual_shares > 0:
             msg = f"🔍 ORPHAN ALERT: Found {actual_shares} shares of undocumented ticker {actual_ticker} in KIS account. This is not tracked by any portfolio slot!"
             alerts.append(msg)
-            
+
+    if state_changed:
+        _save_state(state)
+        
     return alerts
 
 def get_active_holdings_for_monitoring():

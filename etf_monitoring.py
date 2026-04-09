@@ -126,10 +126,8 @@ def main():
     
     if not active_holdings:
         logger.info("No active holdings found in portfolio.")
-        send_telegram_message(f"📊 ETF Monitor ({today_str})\nHoldings: 0 | No active positions\n✅ All clear")
-        return
-        
-    logger.info("Found %d active holdings to monitor.", len(active_holdings))
+    else:
+        logger.info("Found %d active holdings to monitor.", len(active_holdings))
     
     alerts = []
     alert_tickers = []
@@ -272,19 +270,21 @@ def main():
         logger.info("No alerts to send.")
 
     # --- FINAL: Send compact summary via Telegram ---
-    n_holdings = len(active_holdings)
+    n_holdings = len(active_holdings) if active_holdings else 0
     n_alerts = len(all_alerts)
-    summary_lines = [f"📊 ETF Monitor ({today_str})"]
-    parts = [f"Holdings: {n_holdings}", f"Alerts: {n_alerts}"]
-    if total_value > 0:
-        parts.append(f"₩{total_value:,.0f}")
-    summary_lines.append(" | ".join(parts))
-    if all_alerts:
+    
+    if n_alerts > 0:
+        summary_lines = [f"📊 ETF Monitor ({today_str})"]
+        parts = [f"Holdings: {n_holdings}", f"Alerts: {n_alerts}"]
+        if total_value > 0:
+            parts.append(f"₩{total_value:,.0f}")
+        summary_lines.append(" | ".join(parts))
+        
         brief = [a.strip().split('\n')[0] for a in all_alerts[:3]]
         summary_lines.extend(brief)
+        send_telegram_message("\n".join(summary_lines))
     else:
-        summary_lines.append("✅ All clear")
-    send_telegram_message("\n".join(summary_lines))
+        logger.info("No alerts to send. Skipping Telegram notification.")
         
 if __name__ == "__main__":
     try:
