@@ -60,5 +60,10 @@ The project runs a 4-Slot Rotation investment system for **Korea-listed ETFs**.
 - [x] Bugfix (2026-04-09): Refactor `db_manager.py` reconcile logic to aggregate ETF expectations across all slots, preventing database inflation when the same ETF is held in multiple slots.
 - [x] Architectural logging: Updated discrepancy handling to deduct shortfalls from the most recently purchased slots first and add overages to the oldest slot tracking that ticker.
 
+- [x] Sync with GitHub (2026-04-10)
+  - Pulled remote changes from GitHub Actions auto-updates.
+  - Resolved merge conflict in `data/portfolio_value_history.json`.
+  - Standardized JSON value types to floats for `portfolio_value_history.json` to match CI output.
+
 ## Active Task
 (none)
