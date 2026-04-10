@@ -92,6 +92,7 @@ def execute_kis_buy(ticker: str, shares: int, current_price: int) -> bool:
     try:
         env = ka.getTREnv()
         # ord_dvsn "00" = limit order
+        logger.info("Placing buy order: ticker=%s, shares=%s, price=%s", ticker, shares, current_price)
         df = order_cash(
             env_dv=API_ENV_DV,
             ord_dv="buy",
@@ -103,7 +104,14 @@ def execute_kis_buy(ticker: str, shares: int, current_price: int) -> bool:
             ord_unpr=str(int(current_price)),
             excg_id_dvsn_cd="KRX",
         )
-        return df is not None and not df.empty
+        if df is None:
+            logger.error("Buy order for %s returned None. API may have rejected the order.", ticker)
+            return False
+        if df.empty:
+            logger.error("Buy order for %s returned empty DataFrame. API may have rejected the order.", ticker)
+            return False
+        logger.info("Buy order accepted for %s: %s", ticker, df.to_dict())
+        return True
     except Exception as e:
         logger.error("Buy order error for %s: %s", ticker, e)
         return False

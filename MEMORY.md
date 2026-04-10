@@ -60,10 +60,17 @@ The project runs a 4-Slot Rotation investment system for **Korea-listed ETFs**.
 - [x] Bugfix (2026-04-09): Refactor `db_manager.py` reconcile logic to aggregate ETF expectations across all slots, preventing database inflation when the same ETF is held in multiple slots.
 - [x] Architectural logging: Updated discrepancy handling to deduct shortfalls from the most recently purchased slots first and add overages to the oldest slot tracking that ticker.
 
-- [x] Sync with GitHub (2026-04-10)
-  - Pulled remote changes from GitHub Actions auto-updates.
-  - Resolved merge conflict in `data/portfolio_value_history.json`.
-  - Standardized JSON value types to floats for `portfolio_value_history.json` to match CI output.
+- [x] Bugfix (2026-04-10): Fix `etf_screening.py` empty-slot corruption + misleading Telegram message
+  - **Root Cause**: When all KIS buy orders failed (likely due to pre-market timing: 07:00 KST, before KRX 08:00 pre-market), `fill_slot()` was still called with empty `new_holdings`, leaving Slot 2 as `"invested"` with zero holdings — a corrupted state.
+  - **Fix 1**: Guard `fill_slot()` call — only invoke when `new_holdings` is non-empty. If all buys fail, slot stays `"empty"`.
+  - **Fix 2**: Telegram notification now distinguishes three states: successful buy, all-buys-failed, and no-slot-available.
+  - **Fix 3**: Added diagnostic logging to `kis_api.py` `execute_kis_buy` to capture actual API response on failure (previously silent `False`).
+  - **Fix 4**: Manually repaired `portfolio_state.json` Slot 2 from corrupted `"invested"/empty-holdings` back to `"empty"`.
+
+- [x] Consolidate GitHub Actions Cron Design (2026-04-10)
+  - Deleted `.github/workflows/screening.yml`.
+  - Updated `.github/workflows/monitoring.yml` to handle both daily monitoring and weekly screening in a single workflow.
+  - Added bash condition in `monitoring.yml` to dynamically execute `etf_screening.py` with a 10-minute wait (`sleep 600`) if the day is Friday.
 
 ## Active Task
 (none)

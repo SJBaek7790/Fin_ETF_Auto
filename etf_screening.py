@@ -476,9 +476,12 @@ async def main():
                         })
                 
                 remaining_cash = round(allocated_krw - total_spent, 0)
-                await asyncio.to_thread(db_manager.fill_slot, empty_slot, target_sell_date, new_holdings, today_str, initial_cash_balance=remaining_cash)
                 
-                logger.info("Bought %d ETFs into Slot %s. (Spent: ₩%s)", len(new_holdings), empty_slot, f"{total_spent:,.0f}")
+                if new_holdings:
+                    await asyncio.to_thread(db_manager.fill_slot, empty_slot, target_sell_date, new_holdings, today_str, initial_cash_balance=remaining_cash)
+                    logger.info("Bought %d ETFs into Slot %s. (Spent: ₩%s)", len(new_holdings), empty_slot, f"{total_spent:,.0f}")
+                else:
+                    logger.error("All buy orders failed for Slot %s. Slot remains empty.", empty_slot)
             else:
                 logger.warning("No empty slot available to buy new ETFs!")
     else:
@@ -494,6 +497,9 @@ async def main():
     if new_holdings:
         names = [h['name'] for h in new_holdings]
         summary_lines.append(f"Slot {empty_slot} | Bought: {', '.join(names)}")
+    elif selected and empty_slot:
+        names = [s.get('ETF Name', '?') for s in selected]
+        summary_lines.append(f"⚠️ Slot {empty_slot} | All buy orders FAILED: {', '.join(names)}")
     elif selected:
         names = [s.get('ETF Name', '?') for s in selected]
         summary_lines.append(f"Selected: {', '.join(names)} (no slot available)")

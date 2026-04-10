@@ -1,4 +1,4 @@
-name: ETF Monitoring (Daily)
+name: ETF Auto (Daily & Weekly)
 
 on:
   schedule:
@@ -49,17 +49,31 @@ jobs:
           vops: "ws://ops.koreainvestment.com:31000"
           EOF
 
-      - name: Run ETF Monitoring
+      - name: Run ETF Auto (Monitoring & Conditional Screening)
         env:
           PYTHONPATH: /tmp/kis-sdk/examples_user:/tmp/kis-sdk/examples_user/domestic_stock
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
           KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
           KIS_CANO: ${{ secrets.KIS_CANO }}
           KIS_ACNT_PRDT_CD: ${{ secrets.KIS_ACNT_PRDT_CD }}
           KIS_MODE: ${{ secrets.KIS_MODE }}
-        run: python etf_monitoring.py
+        run: |
+          echo "Running ETF Monitoring..."
+          python etf_monitoring.py
+          
+          # Check if today is Friday (Day 5)
+          DAY_OF_WEEK=$(date +%u)
+          if [ "$DAY_OF_WEEK" -eq 5 ]; then
+            echo "Today is Friday. Waiting 10 minutes before running ETF Screening..."
+            sleep 600
+            echo "Running ETF Screening..."
+            python etf_screening.py
+          else
+            echo "Today is not Friday. Skipping ETF Screening."
+          fi
 
       - name: Commit and push portfolio state
         env:
@@ -77,7 +91,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: monitoring-logs
+          name: etf-logs
           path: logs/
           if-no-files-found: ignore
           retention-days: 30
