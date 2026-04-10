@@ -30,7 +30,10 @@
       "cash_balance": 98410.0
     },
     "2": {
-      "status": "empty",
+      "status": "invested",
+      "buy_date": "2026-04-10",
+      "target_sell_date": "2026-05-08",
+      "holdings": [],
       "cash_balance": 2523650.0
     },
     "3": {
