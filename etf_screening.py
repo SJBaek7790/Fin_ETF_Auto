@@ -5,7 +5,7 @@ Screens Korea-listed ETFs using a momentum + excess RSI composite scoring system
 then uses Gemini AI to select a final elite portfolio of 3 ETFs.
 Executes buy orders via the KIS domestic stock API.
 
-Run schedule: Once weekly (e.g. every Thursday during KRX market hours).
+Run schedule: Once weekly.
 """
 
 import os
