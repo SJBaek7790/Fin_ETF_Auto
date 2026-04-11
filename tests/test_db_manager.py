@@ -137,10 +137,21 @@ class TestReconcileWithKISHoldings:
         alerts = db_manager.reconcile_with_kis_holdings(kis_holdings)
         assert alerts == []
 
-    def test_zero_actual_marks_corporate_action(self, tmp_data_dir, sample_portfolio_state):
+    def test_zero_actual_marks_failed_buy(self, tmp_data_dir, sample_portfolio_state):
         db_manager._save_state(sample_portfolio_state)
-        # 069500 shows 0 actual shares — 100% shortfall triggers corporate action (≥50% threshold)
+        # 069500 shows 0 actual shares — 100% shortfall triggers failed_buy
         kis_holdings = [{"ticker": "233740", "shares": 5}]
+        alerts = db_manager.reconcile_with_kis_holdings(kis_holdings)
+        assert len(alerts) > 0
+
+        state = db_manager.get_portfolio_state()
+        kodex_h = [h for h in state["slots"]["1"]["holdings"] if h["ticker"] == "069500"][0]
+        assert kodex_h["status"] == "failed_buy"
+
+    def test_large_drop_marks_corporate_action(self, tmp_data_dir, sample_portfolio_state):
+        db_manager._save_state(sample_portfolio_state)
+        # 069500 shows 4 actual shares instead of 10. (6 / 10 = 0.6 drop >= 0.5), actual > 0
+        kis_holdings = [{"ticker": "069500", "shares": 4}, {"ticker": "233740", "shares": 5}]
         alerts = db_manager.reconcile_with_kis_holdings(kis_holdings)
         assert len(alerts) > 0
 

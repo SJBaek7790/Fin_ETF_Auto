@@ -72,5 +72,9 @@ The project runs a 4-Slot Rotation investment system for **Korea-listed ETFs**.
   - Updated `.github/workflows/monitoring.yml` to handle both daily monitoring and weekly screening in a single workflow.
   - Added bash condition in `monitoring.yml` to dynamically execute `etf_screening.py` with a 10-minute wait (`sleep 600`) if the day is Friday.
 
+- [x] Bugfix (2026-04-11): Fix outdated unit test assertion in `test_db_manager.py`
+  - Updated `test_zero_actual_marks_corporate_action` to assert `failed_buy` instead of `Corporate Action Suspected` to reflect recent core logic patch.
+  - Added new `test_large_drop_marks_corporate_action` to preserve the >50% drop logic test case.
+
 ## Active Task
 (none)
