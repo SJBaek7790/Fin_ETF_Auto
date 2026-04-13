@@ -501,3 +501,90 @@ def calculate_portfolio_metrics():
         "mdd_pct": round(mdd_pct, 2),
         "current_dd_pct": round(current_dd_pct, 2)
     }
+
+def write_pending_orders(mode, orders):
+    """
+    Writes pending_orders.json to the data/ directory.
+    - mode: string, "monitoring" or "screening"
+    - orders: list of order dicts
+    Sets generated_at and uses atomic write.
+    """
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        pending_file = os.path.join(DATA_DIR, 'pending_orders.json')
+        temp_file = pending_file + ".tmp"
+        
+        data = {
+            "generated_at": datetime.now().isoformat(),
+            "mode": mode,
+            "orders": orders
+        }
+        
+        with open(temp_file, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        os.replace(temp_file, pending_file)
+        return True
+    except Exception as e:
+        logger.error("Error writing pending orders: %s", e)
+        return False
+
+def read_and_clear_pending_orders():
+    """
+    Reads pending_orders.json, returns full contents, and deletes the file.
+    Warns if generated_at is > 4 hours ago.
+    """
+    pending_file = os.path.join(DATA_DIR, 'pending_orders.json')
+    if not os.path.exists(pending_file):
+        return None
+        
+    try:
+        with open(pending_file, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            
+        generated_at_str = data.get("generated_at")
+        if generated_at_str:
+            try:
+                gen_time = datetime.fromisoformat(generated_at_str)
+                age = datetime.now() - gen_time
+                if age.total_seconds() > 4 * 3600:
+                    logger.warning("Pending orders file is unexpectedly old: %s ago", age)
+            except ValueError:
+                pass
+                
+        os.remove(pending_file)
+        return data
+    except Exception as e:
+        logger.error("Error reading/clearing pending orders: %s", e)
+        return None
+
+def log_trade(action, ticker, slot, shares, price, reason=""):
+    """
+    Appends a completed trade to data/trade_history.json.
+    """
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        history_file = os.path.join(DATA_DIR, 'trade_history.json')
+        temp_file = history_file + ".tmp"
+        
+        trades = []
+        if os.path.exists(history_file):
+            with open(history_file, 'r', encoding='utf-8') as f:
+                trades = json.load(f)
+                
+        trade_record = {
+            "timestamp": datetime.now().isoformat(),
+            "action": action,
+            "ticker": ticker,
+            "slot": slot,
+            "shares": shares,
+            "price": price,
+            "reason": reason
+        }
+        trades.append(trade_record)
+        
+        with open(temp_file, 'w', encoding='utf-8') as f:
+            json.dump(trades, f, indent=2, ensure_ascii=False)
+        os.replace(temp_file, history_file)
+    except Exception as e:
+        logger.error("Error logging trade: %s", e)
+

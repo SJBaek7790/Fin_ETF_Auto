@@ -76,5 +76,16 @@ The project runs a 4-Slot Rotation investment system for **Korea-listed ETFs**.
   - Updated `test_zero_actual_marks_corporate_action` to assert `failed_buy` instead of `Corporate Action Suspected` to reflect recent core logic patch.
   - Added new `test_large_drop_marks_corporate_action` to preserve the >50% drop logic test case.
 
+- [x] Refactor (2026-04-13): Separated Signal Generation from Order Execution
+  - **Architecture**: Decoupled `etf_monitoring.py` and `etf_screening.py` into distinct signal (`monitor.py`, `screen.py`) and execution (`order_placement.py`) stages to make trade generation purely functional and testable without active KIS contexts.
+  - **State Transfer**: Components now communicate via atomic `temp` file swaps of `data/pending_orders.json`.
+  - **Overlap Netting**: `screen.py` proactively cancels BUY/SELL pairs and trades only the difference for any identical ticker across reallocations to limit unnecessary trading fees.
+  - **Backwards Compatibility**: Rewrote `etf_monitoring.py` and `etf_screening.py` as mere `subprocess` wrappers executing the decoupled pipeline stages in correct sequence.
+
+- [x] Sync (2026-04-14): Push decoupled architecture to GitHub
+  - Staged new modules: `monitor.py`, `screen.py`, `order_placement.py`.
+  - Updated wrappers: `etf_monitoring.py`, `etf_screening.py`.
+  - Force-synced `data/portfolio_state.json` to maintain state persistence.
+
 ## Active Task
 (none)

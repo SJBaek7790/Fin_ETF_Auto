@@ -314,207 +314,22 @@ def save_selected_etfs(selected, date_str):
 
 # --- MAIN ---
 
-async def main():
-    setup_logging("screening")
-    
-    if not is_kr_market_open_today():
-        logger.info("KRX market is closed today. Skipping screening.")
-        return
-
-    bot = telegram.Bot(token=TOKEN) if TOKEN and CHAT_ID else None
-    
-    end_date = datetime.now(tz=ZoneInfo("Asia/Seoul"))
-    start_date = end_date - timedelta(days=200)
-    end_str = end_date.strftime('%Y%m%d')
-    start_str = start_date.strftime('%Y%m%d')
-
-    filter_stats = {
-        'total': 0, 'no_data': 0, 'insufficient_data': 0, 'excluded_keywords': 0,
-        'low_trading': 0, 'failed_momentum': 0,
-        'missing_metrics': 0, 'passed': 0, 'error': 0
-    }
-    selected = []
-    empty_slot = None
-    new_holdings = []
-    
-    logger.info("Screening Korean ETFs...")
-    
-    # 0. Fetch Benchmark Data (KODEX 200)
-    logger.info("Fetching Benchmark (%s) data...", BENCHMARK_TICKER)
-    df_bm = await asyncio.to_thread(get_etf_ohlcv_by_date_wrapper, start_str, end_str, BENCHMARK_TICKER)
-    if df_bm is None or df_bm.empty:
-        logger.critical("Failed to fetch Benchmark data. Aborting.")
-        return
-
-    df_bm = df_bm.sort_index()
-    benchmark_ret = df_bm['close'].pct_change().dropna()
-    
-    etf_tickers = await asyncio.to_thread(get_etf_ticker_list_wrapper, end_str)
-    logger.info("Found %d ETF tickers for date %s", len(etf_tickers), end_str)
-    results = []
-    
-    with ThreadPoolExecutor(max_workers=5) as executor:
-        futures = {executor.submit(process_single_etf, t, benchmark_ret.copy(), start_str, end_str): t for t in etf_tickers}
-        for future in as_completed(futures):
-            res, stats = future.result()
-            filter_stats['total'] += 1
-            if stats.get('filter') in filter_stats: 
-                filter_stats[stats['filter']] += 1
-            if res: results.append(res)
-            
-    min_max_stats = {}
-    df_final = pd.DataFrame()
-    df = pd.DataFrame()
-
-    if results:
-        df = pd.DataFrame(results)
-        
-        cols = ['RET3M', 'EXRSI3M']
-        for col in cols:
-            mn = df[col].min()
-            mx = df[col].max()
-            min_max_stats[col] = {'min': mn, 'max': mx}
-            rng = mx - mn
-            if rng < EPSILON:
-                df[f'S_{col}'] = 50.0
-            elif col == 'EXRSI3M':
-                df[f'S_{col}'] = (mx - df[col]) / rng * 100
-            else:
-                df[f'S_{col}'] = (df[col] - mn) / rng * 100
-        
-        df = df.rename(columns={'S_RET3M': 'RET3M Score', 'S_EXRSI3M': 'EXRSI3M Score'})
-        df['Composite Score'] = df[['RET3M Score', 'EXRSI3M Score']].mean(axis=1).round(2)
-        df_sorted = df.sort_values('Composite Score', ascending=False).reset_index(drop=True)
-        
-        output_columns = ['Ticker', 'ETF Name', 'Avg Trading Value (KRW)', 'RET3M', 'RET3M Score', 'EXRSI3M', 'EXRSI3M Score', 'Composite Score']
-        df_final = df_sorted[output_columns].head(50)
-        
-        # --- STEP 1: Gemini selects 3 ETFs ---
-        logger.info("=== Gemini ETF Selection ===")
-        selected = select_etfs_with_gemini(df_final)
-        
-        # --- DB MANAGER + KIS ORDER EXECUTION ---
-        await asyncio.to_thread(db_manager.init_state)
-        today_str = datetime.now(tz=ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d")
-        
-        async def get_current_price(ticker):
-            data = await asyncio.to_thread(fetch_etf_data, ticker, start_str, end_str)
-            if data and not data['close'].empty:
-                return int(float(data['close'].iloc[-1]))
-            return None
-            
-        if selected:
-            json_path = save_selected_etfs(selected, end_str)
-            
-            # Buy into an empty slot
-            empty_slot = await asyncio.to_thread(db_manager.get_empty_slot)
-            if empty_slot:
-                logger.info("=== Buying into Slot %s ===", empty_slot)
-                target_sell_date = (datetime.now(tz=ZoneInfo("Asia/Seoul")) + timedelta(days=28)).strftime("%Y-%m-%d")
-                
-                # Allocation Logic
-                state = await asyncio.to_thread(db_manager.get_portfolio_state)
-                slot_data = state.get("slots", {}).get(empty_slot, {})
-                allocated_krw = slot_data.get("cash_balance", 0.0)
-                
-                if allocated_krw == 0.0:
-                    logger.info("Initial bootstrap: Fetching total KRW to divide among unallocated slots.")
-                    if kis_api.KIS_READY:
-                        total_krw = await asyncio.to_thread(kis_api.get_available_krw)
-                    else:
-                        total_krw = STARTING_CAPITAL_KRW
-                    
-                    unallocated_slots = [k for k, v in state.get("slots", {}).items() if v.get("status") == "empty" and v.get("cash_balance", 0.0) == 0.0]
-                    
-                    if unallocated_slots:
-                        allocated_krw = round(total_krw / len(unallocated_slots), 0)
-                        for k in unallocated_slots:
-                            if k != empty_slot:
-                                state["slots"][k]["cash_balance"] = allocated_krw        
-                        await asyncio.to_thread(db_manager.save_portfolio_state_locked, state)
-                
-                logger.info("Allocated KRW for Slot %s: ₩%s", empty_slot, f"{allocated_krw:,.0f}")
-                
-                krw_per_etf = allocated_krw / len(selected)
-                
-                new_holdings = []
-                total_spent = 0.0
-                
-                for entry in selected:
-                    t = str(entry.get('Ticker', entry.get('ticker', '')))
-                    n = str(entry.get('ETF Name', entry.get('name', '')))
-                    
-                    price = await get_current_price(t)
-                    if price is None:
-                        logger.warning("Price data unavailable for %s. Skipping buy.", t)
-                        continue
-                    # Apply a 3% cash buffer for price fluctuations
-                    shares_to_buy = int((krw_per_etf * 0.97) // price)
-                    
-                    if shares_to_buy > 0:
-                        if kis_api.KIS_READY:
-                            success = await asyncio.to_thread(kis_api.execute_kis_buy, t, shares_to_buy, price)
-                            if not success:
-                                logger.error("API buy failed for %s. Skipping DB update.", t)
-                                continue
-                        else:
-                            success = True
-                            logger.info("MOCK MODE: Simulated buy for %s.", t)
-                            
-                        logger.info("Executed buy for Slot %s - %s (%d shares @ ₩%s). Success: %s",
-                                    empty_slot, t, shares_to_buy, f"{price:,}", success)
-                        
-                        actual_spent = shares_to_buy * price
-                        total_spent += actual_spent
-                        
-                        new_holdings.append({
-                            "ticker": t,
-                            "name": n,
-                            "shares": shares_to_buy,
-                            "buy_price": price,
-                            "status": "active"
-                        })
-                
-                remaining_cash = round(allocated_krw - total_spent, 0)
-                
-                if new_holdings:
-                    await asyncio.to_thread(db_manager.fill_slot, empty_slot, target_sell_date, new_holdings, today_str, initial_cash_balance=remaining_cash)
-                    logger.info("Bought %d ETFs into Slot %s. (Spent: ₩%s)", len(new_holdings), empty_slot, f"{total_spent:,.0f}")
-                else:
-                    logger.error("All buy orders failed for Slot %s. Slot remains empty.", empty_slot)
-            else:
-                logger.warning("No empty slot available to buy new ETFs!")
-    else:
-        logger.info("No ETFs passed screening.")
-
-    logger.info("=== Filter Statistics ===")
-    for k, v in filter_stats.items():
-        logger.info("%s: %s", k, v)
-
-    # --- FINAL: Send compact summary via Telegram ---
-    summary_lines = [f"🔍 ETF Screening ({end_str})"]
-    summary_lines.append(f"Scanned: {filter_stats['total']} | Passed: {filter_stats['passed']}")
-    if new_holdings:
-        names = [h['name'] for h in new_holdings]
-        summary_lines.append(f"Slot {empty_slot} | Bought: {', '.join(names)}")
-    elif selected and empty_slot:
-        names = [s.get('ETF Name', '?') for s in selected]
-        summary_lines.append(f"⚠️ Slot {empty_slot} | All buy orders FAILED: {', '.join(names)}")
-    elif selected:
-        names = [s.get('ETF Name', '?') for s in selected]
-        summary_lines.append(f"Selected: {', '.join(names)} (no slot available)")
-    else:
-        summary_lines.append("No ETFs selected")
-    if bot:
-        await send_telegram_message_async("\n".join(summary_lines), bot=bot)
+def main():
+    import subprocess, sys
+    scripts = ["monitor.py", "screen.py"]
+    for script in scripts:
+        result = subprocess.run([sys.executable, script], check=False)
+        if result.returncode != 0:
+            logger.error("%s exited with code %d", script, result.returncode)
+    subprocess.run([sys.executable, "order_placement.py"], check=False)
 
 if __name__ == "__main__":
     try:
-        asyncio.run(main())
+        main()
     except Exception as e:
         logger.critical("Unhandled exception: %s", e, exc_info=True)
         if TOKEN and CHAT_ID:
             try:
-                send_telegram_message(f"❌ ETF Screening CRASH\n{e}")
+                send_telegram_message(f"❌ ETF Screening wrapper CRASH\n{e}")
             except Exception as inner_e:
                 logger.error("Failed to send crash log via Telegram: %s", inner_e)
