@@ -1,0 +1,56 @@
+[
+  {
+    "timestamp": "2026-04-17T05:13:59.051313",
+    "action": "BUY",
+    "ticker": "0093A0",
+    "slot": "3",
+    "shares": 24,
+    "price": 33425,
+    "reason": "reallocation"
+  },
+  {
+    "timestamp": "2026-04-17T05:13:59.580204",
+    "action": "BUY",
+    "ticker": "102970",
+    "slot": "3",
+    "shares": 28,
+    "price": 28855,
+    "reason": "reallocation"
+  },
+  {
+    "timestamp": "2026-04-17T05:14:00.192838",
+    "action": "BUY",
+    "ticker": "457990",
+    "slot": "3",
+    "shares": 20,
+    "price": 40565,
+    "reason": "reallocation"
+  },
+  {
+    "timestamp": "2026-04-17T05:14:00.692693",
+    "action": "BUY",
+    "ticker": "0093A0",
+    "slot": "4",
+    "shares": 24,
+    "price": 33425,
+    "reason": "reallocation"
+  },
+  {
+    "timestamp": "2026-04-17T05:14:01.214939",
+    "action": "BUY",
+    "ticker": "102970",
+    "slot": "4",
+    "shares": 28,
+    "price": 28855,
+    "reason": "reallocation"
+  },
+  {
+    "timestamp": "2026-04-17T05:14:01.931799",
+    "action": "BUY",
+    "ticker": "457990",
+    "slot": "4",
+    "shares": 20,
+    "price": 40565,
+    "reason": "reallocation"
+  }
+]

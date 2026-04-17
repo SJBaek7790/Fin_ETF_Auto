@@ -59,12 +59,62 @@
       "cash_balance": 145070
     },
     "3": {
-      "status": "empty",
-      "cash_balance": 2523650
+      "status": "invested",
+      "buy_date": "2026-04-17",
+      "target_sell_date": "2026-05-15",
+      "holdings": [
+        {
+          "ticker": "0093A0",
+          "name": "",
+          "shares": 24,
+          "buy_price": 33425,
+          "status": "active"
+        },
+        {
+          "ticker": "102970",
+          "name": "KODEX 증권",
+          "shares": 28,
+          "buy_price": 28855,
+          "status": "active"
+        },
+        {
+          "ticker": "457990",
+          "name": "PLUS 태양광&ESS",
+          "shares": 20,
+          "buy_price": 40565,
+          "status": "active"
+        }
+      ],
+      "cash_balance": 102210.0
     },
     "4": {
-      "status": "empty",
-      "cash_balance": 2523650
+      "status": "invested",
+      "buy_date": "2026-04-17",
+      "target_sell_date": "2026-05-15",
+      "holdings": [
+        {
+          "ticker": "0093A0",
+          "name": "",
+          "shares": 24,
+          "buy_price": 33425,
+          "status": "active"
+        },
+        {
+          "ticker": "102970",
+          "name": "KODEX 증권",
+          "shares": 28,
+          "buy_price": 28855,
+          "status": "active"
+        },
+        {
+          "ticker": "457990",
+          "name": "PLUS 태양광&ESS",
+          "shares": 20,
+          "buy_price": 40565,
+          "status": "active"
+        }
+      ],
+      "cash_balance": 102210.0
     }
   }
 }
