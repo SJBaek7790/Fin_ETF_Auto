@@ -316,11 +316,13 @@ def save_selected_etfs(selected, date_str):
 
 def main():
     import subprocess, sys
-    scripts = ["monitor.py", "screen.py"]
-    for script in scripts:
-        result = subprocess.run([sys.executable, script], check=False)
-        if result.returncode != 0:
-            logger.error("%s exited with code %d", script, result.returncode)
+    # NOTE: monitor.py is intentionally NOT listed here.
+    # On Fridays, etf_monitoring.py already ran monitor.py + order_placement.py.
+    # This wrapper only needs to run the screening signal generator and then
+    # re-run order_placement.py with the combined (sell + buy) pending orders.
+    result = subprocess.run([sys.executable, "screen.py"], check=False)
+    if result.returncode != 0:
+        logger.error("screen.py exited with code %d", result.returncode)
     subprocess.run([sys.executable, "order_placement.py"], check=False)
 
 if __name__ == "__main__":

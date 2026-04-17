@@ -87,5 +87,13 @@ The project runs a 4-Slot Rotation investment system for **Korea-listed ETFs**.
   - Updated wrappers: `etf_monitoring.py`, `etf_screening.py`.
   - Force-synced `data/portfolio_state.json` to maintain state persistence.
 
+- [x] Bugfix (2026-04-17): Fix `UnboundLocalError: cannot access local variable 'asyncio'` in `screen.py`
+  - **Root Cause**: A stray `import asyncio` inside `main()` at line 459 shadowed the module-level import, causing Python to treat `asyncio` as a local variable throughout the entire function scope, crashing every earlier `asyncio.to_thread()` call.
+  - **Fix**: Removed the in-function `import asyncio`. Added missing `import telegram` at module level (it was previously imported only inside the `except` block of `__main__`).
+
+- [x] Bugfix (2026-04-17): Fix `monitor.py` double-execution on Fridays
+  - **Root Cause**: `etf_screening.py`'s `main()` listed `["monitor.py", "screen.py"]`. On Fridays the workflow runs `etf_monitoring.py` (→ `monitor.py` + `order_placement.py`) first, then `etf_screening.py` (→ `monitor.py` again + `screen.py` + `order_placement.py`). The second `monitor.py` run cleared/overwrote `pending_orders.json`, feeding stale/empty sell data into `screen.py`.
+  - **Fix**: `etf_screening.py` now only runs `screen.py` + `order_placement.py`. `monitor.py` is intentionally excluded from the screening wrapper.
+
 ## Active Task
 (none)

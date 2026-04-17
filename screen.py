@@ -14,6 +14,7 @@ import logging
 import pandas as pd
 import numpy as np
 import asyncio
+import telegram
 import warnings
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -456,7 +457,6 @@ async def main():
     else:
         msg += "No pending orders."
     
-    import asyncio
     bot = telegram.Bot(token=TOKEN) if TOKEN and CHAT_ID else None
     if bot:
         await send_telegram_message_async(msg, bot=bot)
