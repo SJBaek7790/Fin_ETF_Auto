@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from etf_screening import calculate_metrics
+from screen import calculate_metrics
 
 
 class TestCalculateMetrics:

@@ -4,7 +4,7 @@ import pandas as pd
 import pytest
 
 # We import directly; conftest adds project root to sys.path
-from etf_screening import calculate_rsi
+from screen import calculate_rsi
 
 
 class TestCalculateRSI:

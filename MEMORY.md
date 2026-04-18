@@ -114,5 +114,9 @@ The project runs a 4-Slot Rotation investment system for **Korea-listed ETFs**.
   - **Issue**: Agent's shell environment is network-restricted (`Operation not permitted`), preventing automated `git pull/push`.
   - **Resolution**: User must run `git pull --rebase origin main && git push origin main` in their local terminal (which has network access) to finalize the sync.
 
+- [x] Bugfix (2026-04-18): Fix `ImportError` in unit tests (`test_calculate_metrics.py`, `test_calculate_rsi.py`)
+  - **Issue**: Tests were still importing `calculate_metrics` and `calculate_rsi` from `etf_screening.py` after they were moved to `screen.py` in the decoupling refactor.
+  - **Fix**: Updated import statements in both test files to import from `screen.py`.
+
 ## Active Task
 - [ ] Finalize sync via terminal: `git pull --rebase origin main && git push origin main`
