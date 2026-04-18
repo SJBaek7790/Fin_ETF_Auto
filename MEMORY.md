@@ -109,9 +109,10 @@ The project runs a 4-Slot Rotation investment system for **Korea-listed ETFs**.
   - **Fix**: Re-implemented `save_selected_etfs` in `screen.py` and added an `asyncio.to_thread` call in the `main` loop.
   - **Cleanup**: Purged dead code and redundant logic from `etf_screening.py`, leaving it as a pure pipeline wrapper.
 
-- [/] Sync (2026-04-18): Local commit created; push pending network resolution
-  - **Status**: Committed bugfixes and state updates (2c9ee5d).
-  - **Issue**: `git push` failed due to `Could not resolve host: github.com`. Local environment remains network-restricted.
+- [x] Sync (2026-04-18): Local commits created; network restriction requires manual push
+  - **Status**: Committed bugfixes and memory updates (2c9ee5d, e67adf6).
+  - **Issue**: Agent's shell environment is network-restricted (`Operation not permitted`), preventing automated `git pull/push`.
+  - **Resolution**: User must run `git pull --rebase origin main && git push origin main` in their local terminal (which has network access) to finalize the sync.
 
 ## Active Task
-(none)
+- [ ] Finalize sync via terminal: `git pull --rebase origin main && git push origin main`
