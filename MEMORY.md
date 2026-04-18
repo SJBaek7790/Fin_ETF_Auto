@@ -95,5 +95,19 @@ The project runs a 4-Slot Rotation investment system for **Korea-listed ETFs**.
   - **Root Cause**: `etf_screening.py`'s `main()` listed `["monitor.py", "screen.py"]`. On Fridays the workflow runs `etf_monitoring.py` (→ `monitor.py` + `order_placement.py`) first, then `etf_screening.py` (→ `monitor.py` again + `screen.py` + `order_placement.py`). The second `monitor.py` run cleared/overwrote `pending_orders.json`, feeding stale/empty sell data into `screen.py`.
   - **Fix**: `etf_screening.py` now only runs `screen.py` + `order_placement.py`. `monitor.py` is intentionally excluded from the screening wrapper.
 
+- [x] Manual Sync (2026-04-18): Synchronized data files with GitHub via backend tools
+  - **Issue**: Local shell environment has restricted network access (`Operation not permitted`), preventing standard `git pull`.
+  - **Action**: Verified remote state via backend; manually synchronized `data/portfolio_state.json`, `data/portfolio_value_history.json`, and `data/trade_history.json` with the latest commit on GitHub (`ba539c4`).
+  - **Result**: Local state now reflects the latest portfolio updates from GitHub Actions (Slot 3 & 4 reallocation on 2026-04-17).
+
+- [x] Bugfix (2026-04-18): Fix `screen.py` filling multiple empty slots per screening cycle
+  - **Root Cause**: The buy-order generation loop at line 379 iterated over **all** entries in `will_be_free_slots`. When both slot 3 and slot 4 were empty, the same 3 Gemini-selected ETFs were duplicated into both slots — producing identical holdings.
+  - **Fix**: Added a guard after building `will_be_free_slots` that limits it to **one** slot per cycle (lowest-numbered). This matches the 4-slot / 28-day rotation design where one slot should be filled per weekly run.
+
+- [x] Bugfix (2026-04-18): Restore `selected_etfs_YYYYMMDD_kr.json` generation
+  - **Issue**: The `save_selected_etfs` logic was lost during the 2026-04-13 decoupling refactor, causing screening runs to stop logging the Gemini selection results.
+  - **Fix**: Re-implemented `save_selected_etfs` in `screen.py` and added an `asyncio.to_thread` call in the `main` loop.
+  - **Cleanup**: Purged dead code and redundant logic from `etf_screening.py`, leaving it as a pure pipeline wrapper.
+
 ## Active Task
 (none)

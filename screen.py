@@ -241,6 +241,16 @@ def _fallback_top3(df_report):
     return [{'Ticker': str(row['Ticker']), 'ETF Name': row['ETF Name'], 'Reason': 'Fallback'} for _, row in top3.iterrows()]
 
 
+def save_selected_etfs(selected, date_str):
+    """Saves the Gemini-selected ETFs to a dated JSON file in data/ folder."""
+    os.makedirs(DATA_DIR, exist_ok=True)
+    filename = os.path.join(DATA_DIR, f"selected_etfs_{date_str}_kr.json")
+    with open(filename, 'w', encoding='utf-8') as f:
+        json.dump(selected, f, ensure_ascii=False, indent=2)
+    logger.info("Saved selected ETFs to %s", filename)
+    return filename
+
+
 async def main():
     setup_logging("screening")
     
@@ -274,6 +284,7 @@ async def main():
         
     today_obj = datetime.now(tz=ZoneInfo("Asia/Seoul"))
     today_str = today_obj.strftime("%Y-%m-%d")
+    date_file_str = today_obj.strftime("%Y%m%d")
 
     logger.info("Determining slots available for reallocation...")
     for slot_key, slot_data in state.get('slots', {}).items():
@@ -321,6 +332,15 @@ async def main():
                  budget = cash_bal + proceeds
                  will_be_free_slots[slot_key] = budget
                  logger.info("Slot %s will be freed. Expected budget: ₩%s", slot_key, f"{budget:,.0f}")
+
+    # Limit to ONE slot per screening cycle (staggered rotation)
+    if len(will_be_free_slots) > 1:
+        best_key = min(will_be_free_slots.keys(), key=int)
+        logger.info(
+            "Multiple free slots found (%s). Selecting only Slot %s for this cycle.",
+            ", ".join(will_be_free_slots.keys()), best_key
+        )
+        will_be_free_slots = {best_key: will_be_free_slots[best_key]}
 
     if not will_be_free_slots:
         logger.info("No free slots for reallocation. Screening aborted.")
@@ -372,6 +392,9 @@ async def main():
         
     logger.info("=== Gemini ETF Selection ===")
     selected = select_etfs_with_gemini(df_final)
+    
+    if selected:
+        await asyncio.to_thread(save_selected_etfs, selected, date_file_str)
     
     # Assign new ETFs to free slots
     buy_orders = []
