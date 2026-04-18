@@ -109,5 +109,9 @@ The project runs a 4-Slot Rotation investment system for **Korea-listed ETFs**.
   - **Fix**: Re-implemented `save_selected_etfs` in `screen.py` and added an `asyncio.to_thread` call in the `main` loop.
   - **Cleanup**: Purged dead code and redundant logic from `etf_screening.py`, leaving it as a pure pipeline wrapper.
 
+- [/] Sync (2026-04-18): Local commit created; push pending network resolution
+  - **Status**: Committed bugfixes and state updates (2c9ee5d).
+  - **Issue**: `git push` failed due to `Could not resolve host: github.com`. Local environment remains network-restricted.
+
 ## Active Task
 (none)
