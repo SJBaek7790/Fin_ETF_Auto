@@ -3,7 +3,7 @@
     "1": {
       "status": "invested",
       "buy_date": "2026-04-07",
-      "target_sell_date": "2026-05-04",
+      "target_sell_date": "2026-04-28",
       "holdings": [
         {
           "ticker": "498400",
@@ -65,7 +65,7 @@
       "holdings": [
         {
           "ticker": "0093A0",
-          "name": "",
+          "name": "RISE AI반도체TOP10",
           "shares": 24,
           "buy_price": 33425,
           "status": "active"
@@ -90,11 +90,11 @@
     "4": {
       "status": "invested",
       "buy_date": "2026-04-17",
-      "target_sell_date": "2026-05-15",
+      "target_sell_date": "2026-05-22",
       "holdings": [
         {
           "ticker": "0093A0",
-          "name": "",
+          "name": "RISE AI반도체TOP10",
           "shares": 24,
           "buy_price": 33425,
           "status": "active"
