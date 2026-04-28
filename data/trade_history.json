@@ -79,5 +79,32 @@
     "shares": 32,
     "price": 28960,
     "reason": "time-stop"
+  },
+  {
+    "timestamp": "2026-04-28T06:10:27.443752",
+    "action": "BUY",
+    "ticker": "0091P0",
+    "slot": "1",
+    "shares": 10,
+    "price": 27260,
+    "reason": "reallocation"
+  },
+  {
+    "timestamp": "2026-04-28T06:10:28.101671",
+    "action": "BUY",
+    "ticker": "457990",
+    "slot": "1",
+    "shares": 5,
+    "price": 50810,
+    "reason": "reallocation"
+  },
+  {
+    "timestamp": "2026-04-28T06:10:28.778671",
+    "action": "BUY",
+    "ticker": "161510",
+    "slot": "1",
+    "shares": 10,
+    "price": 27645,
+    "reason": "reallocation"
   }
 ]

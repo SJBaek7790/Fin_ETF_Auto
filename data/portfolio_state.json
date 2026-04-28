@@ -1,8 +1,33 @@
 {
   "slots": {
     "1": {
-      "status": "empty",
-      "cash_balance": 926720
+      "status": "invested",
+      "buy_date": "2026-04-28",
+      "target_sell_date": "2026-05-26",
+      "holdings": [
+        {
+          "ticker": "0091P0",
+          "name": "TIGER 코리아원자력",
+          "shares": 10,
+          "buy_price": 27260,
+          "status": "active"
+        },
+        {
+          "ticker": "457990",
+          "name": "PLUS 태양광&ESS",
+          "shares": 5,
+          "buy_price": 50810,
+          "status": "active"
+        },
+        {
+          "ticker": "161510",
+          "name": "PLUS 고배당주",
+          "shares": 10,
+          "buy_price": 27645,
+          "status": "active"
+        }
+      ],
+      "cash_balance": 123620.0
     },
     "2": {
       "status": "invested",
