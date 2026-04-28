@@ -1,0 +1,81 @@
+name: ETF Screening (Manual)
+
+on:
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  screening:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Clone KIS SDK & Setup Config
+        run: |
+          git clone --depth 1 https://github.com/koreainvestment/open-trading-api.git /tmp/kis-sdk
+          mkdir -p ~/KIS/config
+          cat <<EOF > ~/KIS/config/kis_devlp.yaml
+          my_app: "${{ secrets.KIS_APP_KEY }}"
+          my_sec: "${{ secrets.KIS_APP_SECRET }}"
+          paper_app: "${{ secrets.KIS_APP_KEY }}"
+          paper_sec: "${{ secrets.KIS_APP_SECRET }}"
+          my_acct_stock: "${{ secrets.KIS_CANO }}"
+          my_paper_stock: "${{ secrets.KIS_CANO }}"
+          my_prod: "${{ secrets.KIS_ACNT_PRDT_CD }}"
+          my_token: ""
+          my_agent: "Mozilla/5.0"
+          my_htsid: "kis"
+          my_acct_future: ""
+          my_paper_future: ""
+          prod: "https://openapi.koreainvestment.com:9443"
+          vps: "https://openapivts.koreainvestment.com:29443"
+          ops: "ws://ops.koreainvestment.com:21000"
+          vops: "ws://ops.koreainvestment.com:31000"
+          EOF
+
+      - name: Run ETF Screening
+        env:
+          PYTHONPATH: /tmp/kis-sdk/examples_user:/tmp/kis-sdk/examples_user/domestic_stock
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
+          KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
+          KIS_CANO: ${{ secrets.KIS_CANO }}
+          KIS_ACNT_PRDT_CD: ${{ secrets.KIS_ACNT_PRDT_CD }}
+          KIS_MODE: ${{ secrets.KIS_MODE }}
+        run: python etf_screening.py
+
+      - name: Commit and push portfolio state
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          git add -f data/*.json
+          if ! git diff --cached --quiet; then
+            git commit -m "Auto-update portfolio state [skip ci]"
+            git push
+          fi
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: etf-screening-manual-logs
+          path: logs/
+          if-no-files-found: ignore
+          retention-days: 30

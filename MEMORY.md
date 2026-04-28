@@ -110,7 +110,7 @@ The project runs a 4-Slot Rotation investment system for **Korea-listed ETFs**.
   - **Cleanup**: Purged dead code and redundant logic from `etf_screening.py`, leaving it as a pure pipeline wrapper.
 
 - [x] Sync (2026-04-18): Local commits created; network restriction requires manual push
-  - **Status**: Committed bugfixes and memory updates (2c9ee5d, e67adf6).
+  - **Status**: Committed bugfixes and test import fixes (2c9ee5d, e67adf6, 958e814).
   - **Issue**: Agent's shell environment is network-restricted (`Operation not permitted`), preventing automated `git pull/push`.
   - **Resolution**: User must run `git pull --rebase origin main && git push origin main` in their local terminal (which has network access) to finalize the sync.
 
