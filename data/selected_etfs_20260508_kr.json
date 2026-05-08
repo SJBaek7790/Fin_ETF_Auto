@@ -1,0 +1,17 @@
+[
+  {
+    "Ticker": "487240",
+    "ETF Name": "KODEX AI전력핵심설비",
+    "Reason": "Currently the strongest momentum theme in the Korean market, driven by a structural global shortage of transformers and power equipment due to US AI data center expansions [1.15]. With unmatched liquidity (396B KRW) and a 130% 3-month return, it fundamentally captures the AI power grid export catalyst. It was selected as the definitive representative of the power infrastructure theme, strictly filtering out lower-liquidity overlapping peers."
+  },
+  {
+    "Ticker": "0091P0",
+    "ETF Name": "TIGER 코리아원자력",
+    "Reason": "Serves as a complementary AI infrastructure play within the domestic energy and utility sector. Surging electricity demand for AI data centers is creating a structural renaissance for the nuclear industry, heavily supported by government energy policies. Backed by robust liquidity (146B KRW), it captures the macro shift toward clean, stable base-load power, ensuring portfolio diversity beyond traditional tech and industrials."
+  },
+  {
+    "Ticker": "226490",
+    "ETF Name": "KODEX 코스피",
+    "Reason": "Acts as a core anchor representing the Korean broad market. Its exceptional 46% 3-month return is fundamentally supported by the government's Corporate Value-up momentum and the AI-driven memory chip supercycle (SK Hynix, Samsung). By selecting this over smaller overlapping KOSPI or semiconductor ETFs, it offers highly liquid, diversified exposure to Korea's tech-heavy benchmark without single-stock concentration risk."
+  }
+]

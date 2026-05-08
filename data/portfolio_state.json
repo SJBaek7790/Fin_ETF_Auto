@@ -31,32 +31,32 @@
     },
     "2": {
       "status": "invested",
-      "buy_date": "2026-04-10",
-      "target_sell_date": "2026-05-08",
+      "buy_date": "2026-05-08",
+      "target_sell_date": "2026-06-05",
       "holdings": [
         {
-          "ticker": "069500",
-          "name": "KODEX 200",
-          "shares": 9,
-          "buy_price": 88710,
+          "ticker": "487240",
+          "name": "KODEX AI전력핵심설비",
+          "shares": 4,
+          "buy_price": 62620,
           "status": "active"
         },
         {
           "ticker": "0091P0",
           "name": "TIGER 코리아원자력",
-          "shares": 33,
-          "buy_price": 23720,
+          "shares": 11,
+          "buy_price": 25855,
           "status": "active"
         },
         {
-          "ticker": "102970",
-          "name": "KODEX 증권",
-          "shares": 28,
-          "buy_price": 27635,
+          "ticker": "226490",
+          "name": "KODEX 코스피",
+          "shares": 3,
+          "buy_price": 76605,
           "status": "active"
         }
       ],
-      "cash_balance": 145070
+      "cash_balance": 135080.0
     },
     "3": {
       "status": "invested",
