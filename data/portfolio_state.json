@@ -8,7 +8,7 @@
         {
           "ticker": "0091P0",
           "name": "TIGER 코리아원자력",
-          "shares": 10,
+          "shares": 43.0,
           "buy_price": 27260,
           "status": "active"
         },
@@ -73,7 +73,7 @@
         {
           "ticker": "102970",
           "name": "KODEX 증권",
-          "shares": 28,
+          "shares": 56.0,
           "buy_price": 28855,
           "status": "active"
         },
