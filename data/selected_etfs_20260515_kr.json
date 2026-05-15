@@ -1,0 +1,17 @@
+[
+  {
+    "Ticker": "302450",
+    "ETF Name": "RISE 코스피",
+    "Reason": "Fallback"
+  },
+  {
+    "Ticker": "226490",
+    "ETF Name": "KODEX 코스피",
+    "Reason": "Fallback"
+  },
+  {
+    "Ticker": "498400",
+    "ETF Name": "KODEX 200타겟위클리커버드콜",
+    "Reason": "Fallback"
+  }
+]

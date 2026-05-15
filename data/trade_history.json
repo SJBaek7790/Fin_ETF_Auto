@@ -160,5 +160,59 @@
     "shares": 3,
     "price": 76605,
     "reason": "reallocation"
+  },
+  {
+    "timestamp": "2026-05-15T04:58:29.758414",
+    "action": "SELL",
+    "ticker": "0093A0",
+    "slot": "3",
+    "shares": 24,
+    "price": 40690,
+    "reason": "time-stop"
+  },
+  {
+    "timestamp": "2026-05-15T04:58:30.598599",
+    "action": "SELL",
+    "ticker": "102970",
+    "slot": "3",
+    "shares": 56,
+    "price": 29130,
+    "reason": "time-stop"
+  },
+  {
+    "timestamp": "2026-05-15T04:58:31.267937",
+    "action": "SELL",
+    "ticker": "457990",
+    "slot": "3",
+    "shares": 20,
+    "price": 51205,
+    "reason": "time-stop"
+  },
+  {
+    "timestamp": "2026-05-15T05:13:24.509770",
+    "action": "BUY",
+    "ticker": "302450",
+    "slot": "3",
+    "shares": 4,
+    "price": 78295,
+    "reason": "reallocation"
+  },
+  {
+    "timestamp": "2026-05-15T05:13:25.182795",
+    "action": "BUY",
+    "ticker": "226490",
+    "slot": "3",
+    "shares": 4,
+    "price": 77775,
+    "reason": "reallocation"
+  },
+  {
+    "timestamp": "2026-05-15T05:13:25.904080",
+    "action": "BUY",
+    "ticker": "498400",
+    "slot": "3",
+    "shares": 14,
+    "price": 23320,
+    "reason": "reallocation"
   }
 ]

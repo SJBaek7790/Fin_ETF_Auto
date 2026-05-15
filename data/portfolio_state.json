@@ -60,32 +60,32 @@
     },
     "3": {
       "status": "invested",
-      "buy_date": "2026-04-17",
-      "target_sell_date": "2026-05-15",
+      "buy_date": "2026-05-15",
+      "target_sell_date": "2026-06-12",
       "holdings": [
         {
-          "ticker": "0093A0",
-          "name": "RISE AI반도체TOP10",
-          "shares": 24,
-          "buy_price": 33425,
+          "ticker": "302450",
+          "name": "RISE 코스피",
+          "shares": 4,
+          "buy_price": 78295,
           "status": "active"
         },
         {
-          "ticker": "102970",
-          "name": "KODEX 증권",
-          "shares": 56.0,
-          "buy_price": 28855,
+          "ticker": "226490",
+          "name": "KODEX 코스피",
+          "shares": 4,
+          "buy_price": 77775,
           "status": "active"
         },
         {
-          "ticker": "457990",
-          "name": "PLUS 태양광&ESS",
-          "shares": 20,
-          "buy_price": 40565,
+          "ticker": "498400",
+          "name": "KODEX 200타겟위클리커버드콜",
+          "shares": 14,
+          "buy_price": 23320,
           "status": "active"
         }
       ],
-      "cash_balance": 102210.0
+      "cash_balance": 73340.0
     },
     "4": {
       "status": "invested",
