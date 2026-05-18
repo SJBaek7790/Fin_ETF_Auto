@@ -95,21 +95,21 @@
         {
           "ticker": "0093A0",
           "name": "RISE AI반도체TOP10",
-          "shares": 24,
+          "shares": 48.0,
           "buy_price": 33425,
           "status": "active"
         },
         {
           "ticker": "102970",
           "name": "KODEX 증권",
-          "shares": 28,
+          "shares": 84.0,
           "buy_price": 28855,
           "status": "active"
         },
         {
           "ticker": "457990",
           "name": "PLUS 태양광&ESS",
-          "shares": 20,
+          "shares": 40.0,
           "buy_price": 40565,
           "status": "active"
         }
