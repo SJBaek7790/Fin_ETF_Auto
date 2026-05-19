@@ -24,10 +24,13 @@
           "name": "PLUS 고배당주",
           "shares": 10,
           "buy_price": 27645,
-          "status": "active"
+          "status": "cash",
+          "sell_reason": "momentum-dead",
+          "sell_date": "2026-05-19",
+          "sell_price": 27060
         }
       ],
-      "cash_balance": 123620.0
+      "cash_balance": 394220.0
     },
     "2": {
       "status": "invested",
@@ -104,7 +107,10 @@
           "name": "KODEX 증권",
           "shares": 84.0,
           "buy_price": 28855,
-          "status": "active"
+          "status": "cash",
+          "sell_reason": "momentum-dead",
+          "sell_date": "2026-05-19",
+          "sell_price": 27540
         },
         {
           "ticker": "457990",
@@ -114,7 +120,7 @@
           "status": "active"
         }
       ],
-      "cash_balance": 102210.0
+      "cash_balance": 2415570.0
     }
   }
 }

@@ -214,5 +214,23 @@
     "shares": 14,
     "price": 23320,
     "reason": "reallocation"
+  },
+  {
+    "timestamp": "2026-05-19T05:09:31.266413",
+    "action": "SELL",
+    "ticker": "161510",
+    "slot": "1",
+    "shares": 10,
+    "price": 27060,
+    "reason": "momentum-dead"
+  },
+  {
+    "timestamp": "2026-05-19T05:09:31.835467",
+    "action": "SELL",
+    "ticker": "102970",
+    "slot": "4",
+    "shares": 84,
+    "price": 27540,
+    "reason": "momentum-dead"
   }
 ]
